@@ -18,12 +18,13 @@ class TurtleBot:
         'right':  0.0,
     }
 
-    LINEAR_SPEED    = 0.1   # m/s
-    ANGULAR_SPEED   = 0.5   # rad/s
+    LINEAR_SPEED    = 0.15  # m/s  (TB3 Burger max is 0.22)
+    ANGULAR_SPEED   = 1.5   # rad/s (TB3 Burger max is ~2.84)
     STEP_DISTANCE   = 0.20  # 20 cm per action
     ANGLE_TOLERANCE = 0.02  # ~1.1 deg
+    SLOWDOWN_BAND   = 0.2   # rad — ease in within this much of the target
 
-    def __init__(self, node_name='turtle_mover'):
+    def __init__(self, node_name='turtle_mover', start_facing='right'):
         rospy.init_node(node_name, anonymous=True)
         self.pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         self.sub = rospy.Subscriber('/odom', Odometry, self._odom_cb)
@@ -34,6 +35,13 @@ class TurtleBot:
         time.sleep(1.0)  # let the publisher register with /cmd_vel
         while not self._have_odom and not rospy.is_shutdown():
             self.rate.sleep()
+
+        # The bot's physical startup pose defines the grid frame.
+        # `start_facing` says which grid direction the bot is pointing at boot,
+        # so whatever odom yaw it reports right now maps to HEADINGS[start_facing].
+        if start_facing not in self.HEADINGS:
+            raise ValueError(f"start_facing must be one of {list(self.HEADINGS)}")
+        self.yaw_offset = self.yaw - self.HEADINGS[start_facing]
 
     def _odom_cb(self, msg):
         q = msg.pose.pose.orientation
@@ -51,8 +59,8 @@ class TurtleBot:
                 break
             cmd = Twist()
             speed = self.ANGULAR_SPEED
-            if abs(err) < 0.3:
-                speed *= max(abs(err) / 0.3, 0.2)  # ease in near target
+            if abs(err) < self.SLOWDOWN_BAND:
+                speed *= max(abs(err) / self.SLOWDOWN_BAND, 0.3)
             cmd.angular.z = speed if err > 0 else -speed
             self.pub.publish(cmd)
             self.rate.sleep()
@@ -76,7 +84,11 @@ class TurtleBot:
             rospy.logwarn("Unknown action: %s", action)
             return
 
-        self._rotate_to(self.HEADINGS[action])
+        target = math.atan2(
+            math.sin(self.HEADINGS[action] + self.yaw_offset),
+            math.cos(self.HEADINGS[action] + self.yaw_offset),
+        )
+        self._rotate_to(target)
         time.sleep(0.2)
         self._move_forward(self.STEP_DISTANCE)
         time.sleep(0.2)
