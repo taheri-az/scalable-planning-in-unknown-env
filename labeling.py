@@ -8,15 +8,13 @@ from collections import deque
 
 def check_label_l(state_number):
     if state_number == 62:
-        return "a && !b && !c && !d"
+        return "a && !b && !c"
     elif state_number == 9:
-        return "!a && b && !c && !d"
+        return "!a && b && !c"
     elif state_number == 47:
-        return "!a && !b && c && !d"
-    elif state_number == 40:
-        return "!a && !b && !c && d"
+        return "!a && !b && c"
     else:
-        return "!a && !b && !c && !d"
+        return "!a && !b && !c"
 
 
 
