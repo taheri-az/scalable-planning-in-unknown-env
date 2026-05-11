@@ -79,8 +79,12 @@ for s in h_neighbors:
 current_value = all_values[current_state]
 p_t_t, p_t_c = 0, 0
 counter, j = 0, 0
+step_count = 0
 
 bot = TurtleBot()
+print("=" * 60)
+print(f"Starting run | grid {n}x{m} | formula: {formula_str}")
+print("=" * 60)
 
 while next_dfa_state != 'accept_all':
     not_visited = generate_and_visit(m, n, visited_states_un)
@@ -94,9 +98,17 @@ while next_dfa_state != 'accept_all':
     action = policy[current_state]
     current_value = all_values[current_state]
 
-    bot.move(action)
-
+    step_count += 1
     next_physical_state = get_next_state(m, n, current_physical_state, action, adj_matrix)
+    print(
+        f"\n[Step {step_count:>3}] "
+        f"state={current_physical_state:>3} -> {next_physical_state:<3} "
+        f"| action={action:<5} "
+        f"| dfa={current_dfa_state} "
+        f"| value={current_value:8.2f}"
+    )
+
+    bot.move(action)
 
     current_value_0 = all_values[current_state]
     h_neighbors = get_states_within_h_distance(m, n, next_physical_state, h)
@@ -109,8 +121,7 @@ while next_dfa_state != 'accept_all':
     while current_value_0 < -1 / (1 - gamma)+ 100*epsilon:
         p_h += 1
         counter += 1
-        print(f"Replanning #{counter}, p_h={p_h}")
-        print("value",current_value_0)
+        print(f"  [replan #{counter}] p_h={p_h} | value before: {current_value_0:8.2f}")
         plan_neighbors = get_states_within_h_distance(m, n, next_physical_state, p_h)
 
         paths, new_states_to_add = find_paths_in_visited(n, m, next_physical_state, discovered_labels)
@@ -169,7 +180,8 @@ while next_dfa_state != 'accept_all':
     next_state = (next_physical_state, next_dfa_state)
 
     next_value = all_values[next_state]
-    print("value",next_value)
+    label_str = label if label != '!a && !b && !c && !d' else '-'
+    print(f"           next_dfa={next_dfa_state} | label={label_str} | next_value={next_value:8.2f}")
     belief = update(belief, next_physical_state, label)
     observation_probabilities = belief
 
@@ -177,8 +189,7 @@ while next_dfa_state != 'accept_all':
     if trigger_function_value > threshold or next_value == current_value or j >= policy_p_h - 1:
         j = 0
         counter += 1
-        print(f"Replanning #{counter}, p_h={p_h}")
-        print("value",next_value)
+        print(f"  [replan #{counter}] p_h={p_h} | value: {next_value:8.2f}")
 
         paths, new_states_to_add = find_paths_in_visited(n, m, next_physical_state, discovered_labels)
         for state in new_states_to_add:
@@ -207,14 +218,21 @@ while next_dfa_state != 'accept_all':
         if current_physical_state not in visited_states_un:
             visited_states_un.append(current_physical_state)
 
-print(f"Replanning count: {p_t_c}, avg time: {p_t_t/p_t_c:.3f}s")
-
 full_physical_traj.append(next_physical_state)
 full_traj.append(next_state)
 probabilities = grid_probabilities(belief, n, m)
+
+print()
+print("=" * 60)
+print("Run complete")
+print("=" * 60)
+print(f"  Total steps        : {step_count}")
+print(f"  Trajectory length  : {len(full_physical_traj)}")
+print(f"  Replans            : {p_t_c}")
+if p_t_c:
+    print(f"  Avg replan time    : {p_t_t/p_t_c:.3f}s")
+print(f"  Total time         : {time.time() - start_time:.3f}s")
+print(f"  Trajectory         : {full_physical_traj}")
+
 generate_grid_environment(n, m, full_physical_traj, probabilities)
 plt.show()
-
-print(f"Total time: {time.time() - start_time:.3f}s")
-print(f"Trajectory length: {len(full_physical_traj)}")
-print(full_physical_traj)
