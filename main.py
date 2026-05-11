@@ -65,7 +65,9 @@ adj_matrix = filter_adj_matrix(adj_org, plan_neighbors)
 pruned_set = prune_dict_by_states(PA_values(m, n, product_nodes, adj_matrix), plan_neighbors)
 portion_transitions = prune_transitions_by_states(transitions, plan_neighbors)
 transition_dict = probabilistic_labeling_next(portion_transitions, observation_probabilities, dfa_transitions, adj_matrix)
+_t = time.time()
 policy, all_values = Value_iteration(m, n, pruned_set, transition_dict, portion_transitions, product_nodes, gamma, adj_matrix, epsilon)
+print(f"Initial policy computed in {(time.time() - _t)*1000:.1f} ms")
 
 visited_states = [0]
 visited_states_un = [0]
@@ -148,6 +150,7 @@ while next_dfa_state != 'accept_all':
         p_t_t += p_t_i
         p_t_c += 1
         current_value_0 = all_values[current_state]
+        print(f"  [replan #{counter}] policy computed in {p_t_i*1000:.1f} ms | value after: {current_value_0:8.2f}")
 
     for state in h_neighbors:
         if state not in visited_states_un:
@@ -214,6 +217,7 @@ while next_dfa_state != 'accept_all':
         p_t_i = end_time_3 - start_time_3
         p_t_t += p_t_i
         p_t_c += 1
+        print(f"  [replan #{counter}] policy computed in {p_t_i*1000:.1f} ms")
 
         if current_physical_state not in visited_states_un:
             visited_states_un.append(current_physical_state)
