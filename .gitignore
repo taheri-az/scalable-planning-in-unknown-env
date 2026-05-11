@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# Local map dumps and analysis outputs — regenerate locally, don't ship
+*.json
+analysis_results/
+analysis2_results/

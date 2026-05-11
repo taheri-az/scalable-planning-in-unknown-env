@@ -1,0 +1,220 @@
+import time
+import random
+import numpy as np
+import matplotlib.pyplot as plt
+
+import spot
+import buddy
+
+from grid import create_graph
+from labeling import (
+    check_label_l, get_states_within_h_distance, assign_probabilities_g3, update
+)
+from dfa import extract_atomic_props, extract_dfa_transitions_with_trash_expanded
+from product_automaton import generate_product_automaton
+from planning import (
+    PA_values, Value_iteration, generate_and_visit, get_next_state,
+    update_trigger, filter_adj_matrix, prune_dict_by_states, prune_transitions_by_states, find_paths_in_visited
+)
+from grid import grid_probabilities
+from visualization import generate_grid_environment
+from turtle_driver import TurtleBot
+
+n, m = 20, 20
+h = 2
+p_h = 3
+initial_p_h = p_h
+policy_p_h = p_h
+threshold = 0
+gamma = 0.99
+epsilon = 0.01
+formula_str = "F((a & F((b & F((c & F(d)))))))"
+
+start_time = time.time()
+nodes, edges, adj_matrix_np = create_graph(n, m)
+adj_org = adj_matrix_np.tolist()
+
+atomic_props = extract_atomic_props(formula_str)
+dfa_transitions, initial_state, trash_states_set = extract_dfa_transitions_with_trash_expanded(formula_str)
+dfa_states = list({t[0] for t in dfa_transitions} | {t[2] for t in dfa_transitions})
+
+observations = list(set(cond for _, conds, _ in dfa_transitions for cond in conds))
+
+time_ps = time.time()
+product_graph, transitions, product_nodes, PR_adj_matrix = generate_product_automaton(
+    nodes, edges, adj_org, dfa_states, dfa_transitions, observations
+)
+print(f"Product automaton construction time: {time.time() - time_ps:.3f}s")
+
+transitions = list(dict.fromkeys(transitions))
+
+belief = assign_probabilities_g3(n, m, atomic_props)
+observation_probabilities = belief
+
+initial_state = str(initial_state)
+start_node = (0, initial_state)
+current_state = start_node
+next_state = start_node
+next_dfa_state = initial_state
+current_physical_state = 0
+
+from dfa import probabilistic_labeling_next
+
+plan_neighbors = get_states_within_h_distance(m, n, current_physical_state, p_h)
+adj_matrix = filter_adj_matrix(adj_org, plan_neighbors)
+pruned_set = prune_dict_by_states(PA_values(m, n, product_nodes, adj_matrix), plan_neighbors)
+portion_transitions = prune_transitions_by_states(transitions, plan_neighbors)
+transition_dict = probabilistic_labeling_next(portion_transitions, observation_probabilities, dfa_transitions, adj_matrix)
+policy, all_values = Value_iteration(m, n, pruned_set, transition_dict, portion_transitions, product_nodes, gamma, adj_matrix, epsilon)
+
+visited_states = [0]
+visited_states_un = [0]
+previous_probabilities = {}
+full_traj = []
+full_physical_traj = []
+discovered_labels = []
+h_neighbors = get_states_within_h_distance(m, n, current_physical_state, h)
+for s in h_neighbors:
+    visited_states_un.append(s)
+current_value = all_values[current_state]
+p_t_t, p_t_c = 0, 0
+counter, j = 0, 0
+
+bot = TurtleBot()
+
+while next_dfa_state != 'accept_all':
+    not_visited = generate_and_visit(m, n, visited_states_un)
+    if not_visited == [] and current_value < -1 / (1 - gamma) + 100*epsilon:
+        break
+
+    current_state = next_state
+    current_dfa_state = current_state[1]
+    current_physical_state = current_state[0]
+    full_traj.append(current_state)
+    action = policy[current_state]
+    current_value = all_values[current_state]
+
+    bot.move(action)
+
+    next_physical_state = get_next_state(m, n, current_physical_state, action, adj_matrix)
+
+    current_value_0 = all_values[current_state]
+    h_neighbors = get_states_within_h_distance(m, n, next_physical_state, h)
+    plan_neighbors = get_states_within_h_distance(m, n, next_physical_state, p_h)
+
+    adj_matrix = filter_adj_matrix(adj_org, plan_neighbors)
+
+    if current_value_0 > -1 / (1 - gamma) + 100*epsilon:
+        p_h = initial_p_h
+    while current_value_0 < -1 / (1 - gamma)+ 100*epsilon:
+        p_h += 1
+        counter += 1
+        print(f"Replanning #{counter}, p_h={p_h}")
+        print("value",current_value_0)
+        plan_neighbors = get_states_within_h_distance(m, n, next_physical_state, p_h)
+
+        paths, new_states_to_add = find_paths_in_visited(n, m, next_physical_state, discovered_labels)
+        for state in new_states_to_add:
+            if state not in plan_neighbors:
+                plan_neighbors.append(state)
+
+        adj_matrix = filter_adj_matrix(adj_org, plan_neighbors)
+
+        initial_PA_values = PA_values(m, n, product_nodes, adj_matrix)
+        pruned_set = prune_dict_by_states(initial_PA_values, plan_neighbors)
+        policy_p_h = p_h
+
+        portion_transitions = prune_transitions_by_states(transitions, plan_neighbors)
+        transition_dict = probabilistic_labeling_next(
+            portion_transitions, observation_probabilities, dfa_transitions, adj_matrix
+        )
+        start_time_3 = time.time()
+        policy, all_values = Value_iteration(
+            m, n, pruned_set, transition_dict, portion_transitions, product_nodes, gamma, adj_matrix, epsilon
+        )
+        end_time_3 = time.time()
+        p_t_i = end_time_3 - start_time_3
+        p_t_t += p_t_i
+        p_t_c += 1
+        current_value_0 = all_values[current_state]
+
+    for state in h_neighbors:
+        if state not in visited_states_un:
+            visited_states_un.append(state)
+    visited_states.append(current_physical_state)
+    full_physical_traj.append(current_physical_state)
+
+    previous_probabilities = {}
+    neighbor_true_labels = {}
+    for state in h_neighbors:
+        previous_probabilities[state] = belief[state]
+        neighbor_true_labels[state] = check_label_l(state)
+
+    previous_probabilities = {key: value.tolist() for key, value in previous_probabilities.items()}
+    trigger_function_value = update_trigger(h_neighbors, neighbor_true_labels, previous_probabilities)
+
+    for state in h_neighbors:
+        neighbor_label = check_label_l(state)
+        belief = update(belief, state, neighbor_label)
+        if neighbor_label != '!a && !b && !c && !d':
+            if state not in discovered_labels:
+                discovered_labels.append(state)
+
+    label = check_label_l(next_physical_state)
+
+    for i in dfa_transitions:
+        if i[0] == current_dfa_state and label == i[1][0]:
+            next_dfa_state = i[2]
+
+    next_state = (next_physical_state, next_dfa_state)
+
+    next_value = all_values[next_state]
+    print("value",next_value)
+    belief = update(belief, next_physical_state, label)
+    observation_probabilities = belief
+
+    j += 1
+    if trigger_function_value > threshold or next_value == current_value or j >= policy_p_h - 1:
+        j = 0
+        counter += 1
+        print(f"Replanning #{counter}, p_h={p_h}")
+        print("value",next_value)
+
+        paths, new_states_to_add = find_paths_in_visited(n, m, next_physical_state, discovered_labels)
+        for state in new_states_to_add:
+            if state not in plan_neighbors:
+                plan_neighbors.append(state)
+
+        adj_matrix = filter_adj_matrix(adj_org, plan_neighbors)
+
+        initial_PA_values = PA_values(m, n, product_nodes, adj_matrix)
+        pruned_set = prune_dict_by_states(initial_PA_values, plan_neighbors)
+        policy_p_h = p_h
+
+        portion_transitions = prune_transitions_by_states(transitions, plan_neighbors)
+        transition_dict = probabilistic_labeling_next(
+            portion_transitions, observation_probabilities, dfa_transitions, adj_matrix
+        )
+        start_time_3 = time.time()
+        policy, all_values = Value_iteration(
+            m, n, pruned_set, transition_dict, portion_transitions, product_nodes, gamma, adj_matrix, epsilon
+        )
+        end_time_3 = time.time()
+        p_t_i = end_time_3 - start_time_3
+        p_t_t += p_t_i
+        p_t_c += 1
+
+        if current_physical_state not in visited_states_un:
+            visited_states_un.append(current_physical_state)
+
+print(f"Replanning count: {p_t_c}, avg time: {p_t_t/p_t_c:.3f}s")
+
+full_physical_traj.append(next_physical_state)
+full_traj.append(next_state)
+probabilities = grid_probabilities(belief, n, m)
+generate_grid_environment(n, m, full_physical_traj, probabilities)
+plt.show()
+
+print(f"Total time: {time.time() - start_time:.3f}s")
+print(f"Trajectory length: {len(full_physical_traj)}")
+print(full_physical_traj)
