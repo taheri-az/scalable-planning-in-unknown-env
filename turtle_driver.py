@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+import threading
 import time
 
 import rospy
@@ -79,8 +80,8 @@ class TurtleBot:
         self.yaw = 0.0
         self._have_odom = False
         self.rate = rospy.Rate(20)
+        self._motion_thread = None
 
-        time.sleep(1.0)
         while not self._have_odom and not rospy.is_shutdown():
             self.rate.sleep()
 
@@ -128,7 +129,16 @@ class TurtleBot:
             self.rate.sleep()
         self._stop()
 
+    def wait(self):
+        """Block until any in-flight motion has finished."""
+        if self._motion_thread is not None:
+            self._motion_thread.join()
+            self._motion_thread = None
+
     def move(self, action):
+        # Finish whatever motion is currently running before starting the next one.
+        self.wait()
+
         if action == 'stay':
             return
         if action not in self.HEADINGS:
@@ -139,10 +149,14 @@ class TurtleBot:
             math.sin(self.HEADINGS[action] + self.yaw_offset),
             math.cos(self.HEADINGS[action] + self.yaw_offset),
         )
-        self._rotate_to(target)
-        time.sleep(0.2)
+        self._motion_thread = threading.Thread(
+            target=self._execute_move, args=(target,), daemon=True
+        )
+        self._motion_thread.start()
+
+    def _execute_move(self, target_yaw):
+        self._rotate_to(target_yaw)
         self._move_forward(self.STEP_DISTANCE)
-        time.sleep(0.2)
 
 
 if __name__ == '__main__':

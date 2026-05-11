@@ -222,6 +222,7 @@ while next_dfa_state != 'accept_all':
         if current_physical_state not in visited_states_un:
             visited_states_un.append(current_physical_state)
 
+bot.wait()
 full_physical_traj.append(next_physical_state)
 full_traj.append(next_state)
 probabilities = grid_probabilities(belief, n, m)
