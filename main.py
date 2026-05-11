@@ -22,13 +22,13 @@ from turtle_driver import TurtleBot
 
 n, m = 20, 20
 h = 2
-p_h = 3
+p_h = 2
 initial_p_h = p_h
 policy_p_h = p_h
 threshold = 0
 gamma = 0.99
 epsilon = 0.01
-formula_str = "F((a & F((b & F((c & F(d)))))))"
+formula_str = "F((a & F((b & F(c)))))"
 
 start_time = time.time()
 nodes, edges, adj_matrix_np = create_graph(n, m)
