@@ -58,10 +58,11 @@ class TurtleBot:
     }
 
     # Hard motion limits (TB3 Burger: 0.22 m/s, ~2.84 rad/s)
-    LINEAR_SPEED    = 0.15
+    LINEAR_SPEED    = 0.08
     ANGULAR_SPEED   = 1.5
 
-    STEP_DISTANCE   = 0.20   # 20 cm per action
+    # Physical cell size — robot traverses CELL_SIZE meters between cell centers.
+    CELL_SIZE       = 0.4
 
     # PID gains — tuned for TB3 Burger; tune for your bot if needed.
     KP_ANG, KI_ANG, KD_ANG = 3.0, 0.0, 0.3
@@ -69,7 +70,7 @@ class TurtleBot:
 
     ANGLE_TOLERANCE = 0.015   # ~0.86 deg
     DIST_TOLERANCE  = 0.005   # 5 mm
-    MOTION_TIMEOUT  = 8.0     # seconds per move — safety cap
+    MOTION_TIMEOUT  = 12.0    # seconds per cell — safety cap (slower speed needs more headroom)
 
     def __init__(self, node_name='turtle_mover', start_facing='right'):
         rospy.init_node(node_name, anonymous=True)
@@ -80,7 +81,6 @@ class TurtleBot:
         self.yaw = 0.0
         self._have_odom = False
         self.rate = rospy.Rate(20)
-        self._motion_thread = None
 
         while not self._have_odom and not rospy.is_shutdown():
             self.rate.sleep()
@@ -88,6 +88,20 @@ class TurtleBot:
         if start_facing not in self.HEADINGS:
             raise ValueError(f"start_facing must be one of {list(self.HEADINGS)}")
         self.yaw_offset = self.yaw - self.HEADINGS[start_facing]
+
+        # Threaded-motion state.
+        self._lock = threading.Lock()
+        self._next_action = None              # single-slot queue (one action lookahead)
+        self._next_action_event = threading.Event()
+        self._cell_entered = threading.Event()  # set when robot crosses next-cell boundary
+        self._idle = threading.Event()
+        self._idle.set()
+        self._current_yaw_target = None       # heading the robot last drove toward
+        self._cell_start_xy = None            # (x, y) at the start of the current cell traversal
+        self._shutdown = False
+
+        self._motion_thread = threading.Thread(target=self._motion_loop, daemon=True)
+        self._motion_thread.start()
 
     def _odom_cb(self, msg):
         p = msg.pose.pose.position
@@ -99,10 +113,20 @@ class TurtleBot:
     def _stop(self):
         self.pub.publish(Twist())
 
+    def _action_target_yaw(self, action):
+        return math.atan2(
+            math.sin(self.HEADINGS[action] + self.yaw_offset),
+            math.cos(self.HEADINGS[action] + self.yaw_offset),
+        )
+
+    @staticmethod
+    def _yaw_diff(a, b):
+        return abs(math.atan2(math.sin(a - b), math.cos(a - b)))
+
     def _rotate_to(self, target_yaw):
         pid = PID(self.KP_ANG, self.KI_ANG, self.KD_ANG, self.ANGULAR_SPEED)
         deadline = time.time() + self.MOTION_TIMEOUT
-        while not rospy.is_shutdown():
+        while not rospy.is_shutdown() and not self._shutdown:
             err = math.atan2(math.sin(target_yaw - self.yaw),
                              math.cos(target_yaw - self.yaw))
             if abs(err) < self.ANGLE_TOLERANCE or time.time() > deadline:
@@ -113,50 +137,148 @@ class TurtleBot:
             self.rate.sleep()
         self._stop()
 
-    def _move_forward(self, distance):
-        x0, y0 = self.x, self.y
+    def _drive_continuous(self, x0, y0, target_yaw):
+        """
+        Drive forward along `target_yaw` starting from (x0, y0). Fire
+        `_cell_entered` at the half-cell mark. After half-cell, if a queued
+        next action exists in the same direction, consume it and extend the
+        target by one more cell — no deceleration at the boundary. Exit when
+        the cell is complete and no same-direction follow-up is available.
+        """
+        cos_h = math.cos(target_yaw)
+        sin_h = math.sin(target_yaw)
+        self._cell_start_xy = (x0, y0)
+        self._cell_entered.clear()
+        signaled = False
         pid = PID(self.KP_LIN, self.KI_LIN, self.KD_LIN, self.LINEAR_SPEED)
         deadline = time.time() + self.MOTION_TIMEOUT
-        while not rospy.is_shutdown():
-            traveled = math.hypot(self.x - x0, self.y - y0)
-            err = distance - traveled
+
+        while not rospy.is_shutdown() and not self._shutdown:
+            # Signed distance projected onto the heading direction — supports
+            # extending the target while the robot is still mid-cell.
+            traveled = (self.x - x0) * cos_h + (self.y - y0) * sin_h
+            err = self.CELL_SIZE - traveled
+
+            if not signaled and traveled >= self.CELL_SIZE / 2:
+                self._cell_entered.set()
+                signaled = True
+
+            # Only chain after we've delivered the halfway signal for this
+            # cell, otherwise we'd swallow it.
+            if signaled:
+                chained = False
+                with self._lock:
+                    na = self._next_action
+                    if (na is not None
+                        and na in self.HEADINGS
+                        and self._yaw_diff(self._action_target_yaw(na), target_yaw)
+                            < self.ANGLE_TOLERANCE):
+                        self._next_action = None
+                        self._next_action_event.clear()
+                        chained = True
+                if chained:
+                    x0 += cos_h * self.CELL_SIZE
+                    y0 += sin_h * self.CELL_SIZE
+                    self._cell_start_xy = (x0, y0)
+                    self._cell_entered.clear()
+                    signaled = False
+                    deadline = time.time() + self.MOTION_TIMEOUT
+                    continue
+
             if err < self.DIST_TOLERANCE or time.time() > deadline:
                 break
+
             cmd = Twist()
-            v = pid.step(err, time.time())
-            cmd.linear.x = max(0.0, v)  # never reverse on overshoot
+            cmd.linear.x = max(0.0, pid.step(err, time.time()))
             self.pub.publish(cmd)
             self.rate.sleep()
-        self._stop()
 
-    def wait(self):
-        """Block until any in-flight motion has finished."""
-        if self._motion_thread is not None:
-            self._motion_thread.join()
-            self._motion_thread = None
+        if not signaled:
+            # Guarantee progress in pathological cases (timeout, shutdown).
+            self._cell_entered.set()
 
-    def move(self, action):
-        # Finish whatever motion is currently running before starting the next one.
-        self.wait()
-
+    def _execute_action(self, action):
         if action == 'stay':
+            self._cell_entered.set()
             return
         if action not in self.HEADINGS:
             rospy.logwarn("Unknown action: %s", action)
+            self._cell_entered.set()
             return
 
-        target = math.atan2(
-            math.sin(self.HEADINGS[action] + self.yaw_offset),
-            math.cos(self.HEADINGS[action] + self.yaw_offset),
+        target_yaw = self._action_target_yaw(action)
+        same_direction = (
+            self._current_yaw_target is not None
+            and self._yaw_diff(target_yaw, self._current_yaw_target) < self.ANGLE_TOLERANCE
         )
-        self._motion_thread = threading.Thread(
-            target=self._execute_move, args=(target,), daemon=True
-        )
-        self._motion_thread.start()
 
-    def _execute_move(self, target_yaw):
-        self._rotate_to(target_yaw)
-        self._move_forward(self.STEP_DISTANCE)
+        if not same_direction:
+            self._rotate_to(target_yaw)
+            self._current_yaw_target = target_yaw
+            x0, y0 = self.x, self.y
+        else:
+            # Same direction — start the new cell from where the previous cell
+            # ended, even if the robot is still in motion. This keeps absolute
+            # cell positions exact and avoids drift accumulation.
+            if self._cell_start_xy is not None:
+                cos_h = math.cos(target_yaw)
+                sin_h = math.sin(target_yaw)
+                x0 = self._cell_start_xy[0] + cos_h * self.CELL_SIZE
+                y0 = self._cell_start_xy[1] + sin_h * self.CELL_SIZE
+            else:
+                x0, y0 = self.x, self.y
+
+        self._drive_continuous(x0, y0, target_yaw)
+
+    def _motion_loop(self):
+        while not rospy.is_shutdown() and not self._shutdown:
+            self._next_action_event.wait()
+            if self._shutdown:
+                break
+            with self._lock:
+                action = self._next_action
+                self._next_action = None
+                self._next_action_event.clear()
+            if action is None:
+                continue
+
+            self._execute_action(action)
+
+            # If nothing else queued, fully stop and mark idle.
+            with self._lock:
+                follow_up = self._next_action
+            if follow_up is None:
+                self._stop()
+                self._idle.set()
+        self._stop()
+
+    # ---------- public API ----------
+
+    def move(self, action):
+        """Queue the next action. Returns immediately; motion runs in the background."""
+        with self._lock:
+            if self._next_action is not None:
+                rospy.logwarn(
+                    "Overwriting queued action %s with %s "
+                    "(main is queueing faster than motion can chain)",
+                    self._next_action, action,
+                )
+            self._next_action = action
+        self._cell_entered.clear()
+        self._idle.clear()
+        self._next_action_event.set()
+
+    def wait_for_cell_entry(self):
+        """Block until the robot has crossed into the next cell (halfway through CELL_SIZE)."""
+        self._cell_entered.wait()
+
+    def wait(self):
+        """Block until all queued motion has finished and the robot is stopped."""
+        self._idle.wait()
+
+    def shutdown(self):
+        self._shutdown = True
+        self._next_action_event.set()
 
 
 if __name__ == '__main__':
@@ -164,4 +286,6 @@ if __name__ == '__main__':
     for a in ['up', 'right', 'down', 'left']:
         print(f"Action: {a}")
         bot.move(a)
+        bot.wait_for_cell_entry()
+    bot.wait()
     print('Done.')

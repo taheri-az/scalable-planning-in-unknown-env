@@ -111,6 +111,7 @@ while next_dfa_state != 'accept_all':
     )
 
     bot.move(action)
+    bot.wait_for_cell_entry()
 
     current_value_0 = all_values[current_state]
     h_neighbors = get_states_within_h_distance(m, n, next_physical_state, h)
