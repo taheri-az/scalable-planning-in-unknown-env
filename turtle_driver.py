@@ -61,6 +61,10 @@ class TurtleBot:
     LINEAR_SPEED    = 0.08
     ANGULAR_SPEED   = 1.5
 
+    # Linear velocity held during a heading change. Nonzero so the robot
+    # arcs through corners instead of pivoting in place.
+    TURN_LINEAR_SPEED = 0.04
+
     # Physical cell size — robot traverses CELL_SIZE meters between cell centers.
     CELL_SIZE       = 0.4
 
@@ -123,7 +127,9 @@ class TurtleBot:
     def _yaw_diff(a, b):
         return abs(math.atan2(math.sin(a - b), math.cos(a - b)))
 
-    def _rotate_to(self, target_yaw):
+    def _blend_rotate(self, target_yaw):
+        """Rotate to `target_yaw` while keeping a slow forward velocity, so
+        the robot arcs through the corner rather than stopping to pivot."""
         pid = PID(self.KP_ANG, self.KI_ANG, self.KD_ANG, self.ANGULAR_SPEED)
         deadline = time.time() + self.MOTION_TIMEOUT
         while not rospy.is_shutdown() and not self._shutdown:
@@ -133,9 +139,11 @@ class TurtleBot:
                 break
             cmd = Twist()
             cmd.angular.z = pid.step(err, time.time())
+            cmd.linear.x = self.TURN_LINEAR_SPEED
             self.pub.publish(cmd)
             self.rate.sleep()
-        self._stop()
+        # No _stop() here — let _drive_continuous take over the cmd_vel stream
+        # so there's no zero-velocity gap between rotation and the next cell.
 
     def _drive_continuous(self, x0, y0, target_yaw):
         """
@@ -213,7 +221,7 @@ class TurtleBot:
         )
 
         if not same_direction:
-            self._rotate_to(target_yaw)
+            self._blend_rotate(target_yaw)
             self._current_yaw_target = target_yaw
             x0, y0 = self.x, self.y
         else:
