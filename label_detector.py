@@ -7,6 +7,7 @@ distance from the camera to the marker in meters. Uses the calibration and
 HSV bounds saved by Camera_tu/distance_estimation.py.
 """
 
+import atexit
 import json
 import threading
 import time
@@ -71,15 +72,21 @@ class LabelDetector:
 
         self._writer = None
         if record_path is not None:
+            # MJPG-in-AVI: every frame is self-contained, so the file remains
+            # playable even if the program is killed before close() runs.
             self._writer = cv2.VideoWriter(
                 record_path,
-                cv2.VideoWriter_fourcc(*"mp4v"),
+                cv2.VideoWriter_fourcc(*"MJPG"),
                 record_fps,
                 self._frame_size,
             )
 
         self._grab_thread = threading.Thread(target=self._grab_loop, daemon=True)
         self._grab_thread.start()
+
+        # Make sure the writer + camera get released even on KeyboardInterrupt
+        # or other unclean exits.
+        atexit.register(self.close)
 
     def _grab_loop(self):
         while not self._shutdown:
