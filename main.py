@@ -87,7 +87,7 @@ counter, j = 0, 0
 step_count = 0
 
 bot = TurtleBot()
-detector = LabelDetector(camera_index=0)
+detector = LabelDetector(camera_index=0, record_path="run.mp4")
 print("=" * 60)
 print(f"Starting run | grid {n}x{m} | formula: {formula_str}")
 print("=" * 60)
