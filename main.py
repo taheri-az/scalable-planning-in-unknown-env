@@ -8,8 +8,10 @@ import buddy
 
 from grid import create_graph
 from labeling import (
-    check_label_l, get_states_within_h_distance, assign_probabilities_g3, update
+    get_states_within_h_distance, assign_probabilities_g3, update
 )
+
+EMPTY_LABEL = '!a && !b && !c'
 from dfa import extract_atomic_props, extract_dfa_transitions_with_trash_expanded
 from product_automaton import generate_product_automaton
 from planning import (
@@ -80,6 +82,7 @@ print(f"Initial policy computed in {(time.time() - _t)*1000:.1f} ms")
 visited_states = [0]
 visited_states_un = [0]
 previous_probabilities = {}
+perceived_labels = {}        # cell_index -> last label the camera detected there
 full_traj = []
 full_physical_traj = []
 discovered_labels = []
@@ -92,7 +95,7 @@ counter, j = 0, 0
 step_count = 0
 
 bot = TurtleBot()
-detector = LabelDetector(camera_index=0, record_path="run.avi")
+detector = LabelDetector(camera_index=0, record_path="run.mp4")
 print("=" * 60)
 print(f"Starting run | grid {n}x{m} | formula: {formula_str}")
 print("=" * 60)
@@ -123,6 +126,7 @@ while next_dfa_state != 'accept_all':
     bot.wait_for_cell_entry()
 
     detected_label, detected_dist = detector.detect()
+    assigned_cell = None
     if detected_label is not None:
         # The robot has just entered next_physical_state and is still facing `action`.
         # The cell directly in front of it (one step further along `action`) is the
@@ -147,6 +151,10 @@ while next_dfa_state != 'accept_all':
             f"  [LABEL] detected red (a) @ {detected_dist*100:5.1f} cm "
             f"-> assigned to cell {assigned_cell} ({assigned_label})"
         )
+        # Record the camera's verdict so DFA + belief update use it instead of
+        # any prior ground-truth lookup.
+        if assigned_cell is not None:
+            perceived_labels[assigned_cell] = detected_label
 
     current_value_0 = all_values[current_state]
     h_neighbors = get_states_within_h_distance(m, n, next_physical_state, h)
@@ -194,23 +202,31 @@ while next_dfa_state != 'accept_all':
     visited_states.append(current_physical_state)
     full_physical_traj.append(current_physical_state)
 
+    # Full-perception mode: only the cells the camera has actually observed
+    # contribute to the trigger and belief update. Unobserved cells keep their
+    # prior so the planner stays curious about them.
+    observed_h_neighbors = [s for s in h_neighbors if s in perceived_labels]
     previous_probabilities = {}
-    neighbor_true_labels = {}
-    for state in h_neighbors:
+    neighbor_true_labels   = {}
+    for state in observed_h_neighbors:
         previous_probabilities[state] = belief[state]
-        neighbor_true_labels[state] = check_label_l(state)
+        neighbor_true_labels[state]   = perceived_labels[state]
 
-    previous_probabilities = {key: value.tolist() for key, value in previous_probabilities.items()}
-    trigger_function_value = update_trigger(h_neighbors, neighbor_true_labels, previous_probabilities)
+    previous_probabilities = {k: v.tolist() for k, v in previous_probabilities.items()}
+    if observed_h_neighbors:
+        trigger_function_value = update_trigger(
+            observed_h_neighbors, neighbor_true_labels, previous_probabilities
+        )
+    else:
+        trigger_function_value = 0.0
 
-    for state in h_neighbors:
-        neighbor_label = check_label_l(state)
+    for state in observed_h_neighbors:
+        neighbor_label = perceived_labels[state]
         belief = update(belief, state, neighbor_label)
-        if neighbor_label != '!a && !b && !c && !d':
-            if state not in discovered_labels:
-                discovered_labels.append(state)
+        if neighbor_label != EMPTY_LABEL and state not in discovered_labels:
+            discovered_labels.append(state)
 
-    label = check_label_l(next_physical_state)
+    label = perceived_labels.get(next_physical_state, EMPTY_LABEL)
 
     for i in dfa_transitions:
         if i[0] == current_dfa_state and label == i[1][0]:
@@ -219,9 +235,12 @@ while next_dfa_state != 'accept_all':
     next_state = (next_physical_state, next_dfa_state)
 
     next_value = all_values[next_state]
-    label_str = label if label != '!a && !b && !c && !d' else '-'
+    label_str = label if label != EMPTY_LABEL else '-'
     print(f"           next_dfa={next_dfa_state} | label={label_str} | next_value={next_value:8.2f}")
-    belief = update(belief, next_physical_state, label)
+    # Only sharpen belief on the just-entered cell if the camera actually
+    # saw something for it; otherwise let the prior stand.
+    if next_physical_state in perceived_labels:
+        belief = update(belief, next_physical_state, perceived_labels[next_physical_state])
     observation_probabilities = belief
 
     j += 1

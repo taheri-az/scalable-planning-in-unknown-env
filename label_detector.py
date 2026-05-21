@@ -71,12 +71,16 @@ class LabelDetector:
         self._shutdown     = False
 
         self._writer = None
+        self._record_fps = record_fps
         if record_path is not None:
-            # MJPG-in-AVI: every frame is self-contained, so the file remains
-            # playable even if the program is killed before close() runs.
+            # mp4v in .mp4: much smaller than MJPG at the same visual quality.
+            # The atexit handler below releases the writer on clean exits so
+            # the moov atom gets written and the file stays playable.
+            # IMPORTANT: only interrupt with Ctrl-C (never Ctrl-Z) — suspending
+            # the process prevents close() from running.
             self._writer = cv2.VideoWriter(
                 record_path,
-                cv2.VideoWriter_fourcc(*"MJPG"),
+                cv2.VideoWriter_fourcc(*"mp4v"),
                 record_fps,
                 self._frame_size,
             )
@@ -89,6 +93,8 @@ class LabelDetector:
         atexit.register(self.close)
 
     def _grab_loop(self):
+        write_interval = 1.0 / self._record_fps if self._record_fps > 0 else 0.0
+        last_write = 0.0
         while not self._shutdown:
             ok, frame = self.cap.read()
             if not ok:
@@ -96,8 +102,43 @@ class LabelDetector:
                 continue
             with self._frame_lock:
                 self._latest_frame = frame
-            if self._writer is not None:
-                self._writer.write(frame)
+            if self._writer is None:
+                continue
+            now = time.time()
+            if now - last_write < write_interval:
+                continue
+            annotated = frame.copy()
+            label, dist_m, bbox = self._detect_in_frame(annotated)
+            self._annotate(annotated, label, dist_m, bbox)
+            self._writer.write(annotated)
+            last_write = now
+
+    def _detect_in_frame(self, frame):
+        """Returns (label_str, distance_m, (x, y, w, h)) or (None, None, None)."""
+        mask = self._color_mask(frame)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None, None, None
+        biggest = max(contours, key=cv2.contourArea)
+        if cv2.contourArea(biggest) < self.min_area_px:
+            return None, None, None
+        x, y, w, h = cv2.boundingRect(biggest)
+        if w <= 0:
+            return None, None, None
+        distance_cm = (self.real_width_cm * self.focal_px) / w
+        distance_m  = distance_cm / 100.0
+        return COLOR_LABEL["red"], distance_m, (x, y, w, h)
+
+    @staticmethod
+    def _annotate(frame, label, distance_m, bbox):
+        if bbox is None:
+            return
+        x, y, w, h = bbox
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        cv2.putText(frame, str(label), (x, max(y - 28, 18)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+        cv2.putText(frame, f"{distance_m * 100:.1f} cm", (x, max(y - 6, 36)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
 
     def _color_mask(self, frame):
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -123,24 +164,8 @@ class LabelDetector:
             if self._latest_frame is None:
                 return None, None
             frame = self._latest_frame.copy()
-
-        mask = self._color_mask(frame)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return None, None
-
-        biggest = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(biggest) < self.min_area_px:
-            return None, None
-
-        _, _, pix_w, _ = cv2.boundingRect(biggest)
-        if pix_w <= 0:
-            return None, None
-
-        # Pinhole: D = (W * F) / P. Calibration was in cm; convert to meters.
-        distance_cm = (self.real_width_cm * self.focal_px) / pix_w
-        distance_m  = distance_cm / 100.0
-        return COLOR_LABEL["red"], distance_m
+        label, dist_m, _bbox = self._detect_in_frame(frame)
+        return label, dist_m
 
     def close(self):
         self._shutdown = True
