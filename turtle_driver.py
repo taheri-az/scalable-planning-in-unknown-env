@@ -286,7 +286,11 @@ class TurtleBot:
 
     def shutdown(self):
         self._shutdown = True
+        # Wake every blocked waiter so threads exit promptly.
         self._next_action_event.set()
+        self._cell_entered.set()
+        self._idle.set()
+        self._stop()
 
 
 if __name__ == '__main__':

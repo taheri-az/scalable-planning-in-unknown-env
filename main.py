@@ -1,3 +1,5 @@
+import signal
+import sys
 import time
 import random
 import numpy as np
@@ -96,6 +98,20 @@ step_count = 0
 
 bot = TurtleBot()
 detector = LabelDetector(camera_index=0, record_path="run.mp4")
+
+def _shutdown_handler(signum, _frame):
+    # Override rospy's SIGINT handler so a single Ctrl-C reliably stops us
+    # *and* finalizes the video file (atexit also fires after sys.exit).
+    print(f"\n[interrupt] signal {signum} received, shutting down...")
+    try: bot.shutdown()
+    except Exception: pass
+    try: detector.close()
+    except Exception: pass
+    sys.exit(0)
+
+signal.signal(signal.SIGINT,  _shutdown_handler)
+signal.signal(signal.SIGTERM, _shutdown_handler)
+
 print("=" * 60)
 print(f"Starting run | grid {n}x{m} | formula: {formula_str}")
 print("=" * 60)
