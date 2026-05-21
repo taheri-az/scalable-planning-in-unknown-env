@@ -51,7 +51,12 @@ print(f"Product automaton construction time: {time.time() - time_ps:.3f}s")
 
 transitions = list(dict.fromkeys(transitions))
 
-belief = assign_probabilities_g3(n, m, atomic_props)
+a_prior_cells = [1, 2, 3, 4, 5]
+initial_belief = {
+    s: {'a && !b && !c': 0.5, '!a && !b && !c': 0.5}
+    for s in a_prior_cells
+}
+belief = assign_probabilities_g3(n, m, atomic_props, initial_belief=initial_belief)
 observation_probabilities = belief
 
 initial_state = str(initial_state)
