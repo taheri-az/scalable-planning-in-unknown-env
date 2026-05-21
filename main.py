@@ -19,6 +19,9 @@ from planning import (
 from grid import grid_probabilities
 from visualization import generate_grid_environment
 from turtle_driver import TurtleBot
+from label_detector import LabelDetector
+
+CELL_SIZE_M = 0.4  # must match TurtleBot.CELL_SIZE
 
 n, m = 20, 20
 h = 2
@@ -84,6 +87,7 @@ counter, j = 0, 0
 step_count = 0
 
 bot = TurtleBot()
+detector = LabelDetector(camera_index=0)
 print("=" * 60)
 print(f"Starting run | grid {n}x{m} | formula: {formula_str}")
 print("=" * 60)
@@ -112,6 +116,32 @@ while next_dfa_state != 'accept_all':
 
     bot.move(action)
     bot.wait_for_cell_entry()
+
+    detected_label, detected_dist = detector.detect()
+    if detected_label is not None:
+        # The robot has just entered next_physical_state and is still facing `action`.
+        # The cell directly in front of it (one step further along `action`) is the
+        # cell we tentatively assign the marker to when distance < CELL_SIZE_M.
+        facing_cell = get_next_state(m, n, next_physical_state, action, adj_org)
+        if detected_dist < CELL_SIZE_M:
+            assigned_cell = facing_cell if facing_cell is not None else next_physical_state
+            assigned_label = 'next'
+        else:
+            # Marker is farther — assume one extra cell per CELL_SIZE_M of distance
+            # beyond the half-cell boundary, walking forward along `action`.
+            n_ahead = max(1, int(detected_dist / CELL_SIZE_M))
+            cell = next_physical_state
+            for _ in range(n_ahead):
+                nxt = get_next_state(m, n, cell, action, adj_org)
+                if nxt is None:
+                    break
+                cell = nxt
+            assigned_cell = cell
+            assigned_label = f'{n_ahead}-ahead'
+        print(
+            f"  [LABEL] detected red (a) @ {detected_dist*100:5.1f} cm "
+            f"-> assigned to cell {assigned_cell} ({assigned_label})"
+        )
 
     current_value_0 = all_values[current_state]
     h_neighbors = get_states_within_h_distance(m, n, next_physical_state, h)
@@ -224,6 +254,7 @@ while next_dfa_state != 'accept_all':
             visited_states_un.append(current_physical_state)
 
 bot.wait()
+detector.close()
 full_physical_traj.append(next_physical_state)
 full_traj.append(next_state)
 probabilities = grid_probabilities(belief, n, m)
