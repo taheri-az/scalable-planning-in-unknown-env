@@ -41,7 +41,7 @@ class LabelDetector:
         frame_width: int = 640,
         frame_height: int = 480,
         warmup_seconds: float = 2.0,
-        min_area_px: int = 500,
+        min_area_px: int = 1500,
         record_path: str = None,
         record_fps: float = 20.0,
     ):

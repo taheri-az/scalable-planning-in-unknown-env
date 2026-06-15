@@ -25,7 +25,8 @@ from visualization import generate_grid_environment
 from turtle_driver import TurtleBot
 from label_detector import LabelDetector
 
-CELL_SIZE_M = 0.3  # must match TurtleBot.CELL_SIZE
+CELL_SIZE_M   = 0.3   # must match TurtleBot.CELL_SIZE
+ASSIGN_DIST_M = 0.40  # marker is attributed to facing_cell when within this
 
 n, m = 4, 4
 p_h = 3
@@ -149,7 +150,7 @@ while next_dfa_state != 'accept_all':
         # Only trust a detection if the marker is within one cell of the
         # camera (closer than CELL_SIZE_M). Anything farther is too noisy to
         # assign reliably.
-        if detected_dist < CELL_SIZE_M and facing_cell is not None:
+        if detected_dist < ASSIGN_DIST_M and facing_cell is not None:
             assigned_cell = facing_cell
             dfa_tag = f"-> {detected_label}" if detected_label is not None else "(unmapped)"
             print(
