@@ -135,18 +135,15 @@ while next_dfa_state != 'accept_all':
         f"| value={current_value:8.2f}"
     )
 
+    # Start the observation window BEFORE the move so the grab thread can
+    # accumulate detections during the entire drive. Otherwise close-range
+    # frames from the first half of the move would be wiped before we read
+    # them. detect() returns the closest reading over this whole window.
+    detector.reset_observation_window()
     bot.move(action)
     bot.wait_for_cell_entry()
-    # Let the heading finish settling before reading the camera, so the FOV
-    # matches the action direction (and the marker isn't seen mid-turn).
     bot.wait_for_heading_settled()
-
-    # Continuous-tracking window: reset the per-colour closest-distance
-    # buffer *after* the rotation finishes, then let the grab thread
-    # accumulate detections for a short period while the robot drives the
-    # rest of the way into the cell. detect() returns the closest reading.
-    detector.reset_observation_window()
-    time.sleep(1.5)
+    time.sleep(0.3)  # small tail to catch any final close-up frames
     detected_label, detected_dist, detected_color, snapshot = detector.detect()
 
     # Diagnostic: dump every colour seen in the window with its closest distance.
