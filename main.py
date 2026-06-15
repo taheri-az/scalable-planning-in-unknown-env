@@ -144,34 +144,29 @@ while next_dfa_state != 'accept_all':
     detected_label, detected_dist, detected_color = detector.detect()
     assigned_cell = None
     if detected_color is not None:
-        # The robot has just entered next_physical_state and is still facing `action`.
-        # The cell directly in front of it (one step further along `action`) is the
-        # cell we tentatively assign the marker to when distance < CELL_SIZE_M.
+        # The robot has just entered next_physical_state and is still facing
+        # `action`. Only trust a detection if the marker is within one cell of
+        # the camera — closer than CELL_SIZE_M. Anything farther is too noisy
+        # to assign reliably, so we ignore it and wait until the robot is
+        # closer.
         facing_cell = get_next_state(m, n, next_physical_state, action, adj_org)
-        if detected_dist < CELL_SIZE_M:
-            assigned_cell = facing_cell if facing_cell is not None else next_physical_state
-            assigned_kind = 'next'
+        if detected_dist < CELL_SIZE_M and facing_cell is not None:
+            assigned_cell = facing_cell
+            dfa_tag = f"-> {detected_label}" if detected_label is not None else "(unmapped)"
+            print(
+                f"  [LABEL] detected {detected_color} @ {detected_dist*100:5.1f} cm "
+                f"-> cell {assigned_cell} {dfa_tag}"
+            )
+            # Only colours mapped to a DFA proposition affect the planner;
+            # yellow and orange are observed and reported but don't change
+            # perceived_labels.
+            if detected_label is not None:
+                perceived_labels[assigned_cell] = detected_label
         else:
-            # Marker is farther — assume one extra cell per CELL_SIZE_M of distance
-            # beyond the half-cell boundary, walking forward along `action`.
-            n_ahead = max(1, int(detected_dist / CELL_SIZE_M))
-            cell = next_physical_state
-            for _ in range(n_ahead):
-                nxt = get_next_state(m, n, cell, action, adj_org)
-                if nxt is None:
-                    break
-                cell = nxt
-            assigned_cell = cell
-            assigned_kind = f'{n_ahead}-ahead'
-        dfa_tag = f"-> {detected_label}" if detected_label is not None else "(unmapped)"
-        print(
-            f"  [LABEL] detected {detected_color} @ {detected_dist*100:5.1f} cm "
-            f"-> assigned to cell {assigned_cell} ({assigned_kind}) {dfa_tag}"
-        )
-        # Only colours mapped to a DFA proposition affect the planner; yellow
-        # and orange are observed and reported but don't change perceived_labels.
-        if assigned_cell is not None and detected_label is not None:
-            perceived_labels[assigned_cell] = detected_label
+            print(
+                f"  [LABEL] detected {detected_color} @ {detected_dist*100:5.1f} cm "
+                f"(too far, not assigned)"
+            )
 
     current_value_0 = all_values[current_state]
     h_neighbors = get_states_within_h_distance(m, n, next_physical_state, h)
