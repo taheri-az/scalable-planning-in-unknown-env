@@ -110,7 +110,7 @@ def generate_observations(regions):
     return observations
 
 
-def assign_probabilities_g3(n, m, regions, initial_belief=None, zeta=0.002):
+def assign_probabilities_g3(n, m, regions, initial_belief=None, zeta=0.02):
     """
     Build initial belief grid for all 2^len(regions) label combinations.
 
@@ -151,7 +151,7 @@ def assign_probabilities_g3(n, m, regions, initial_belief=None, zeta=0.002):
     return grid
 
 
-def update(grid, state, label, zeta=0.002):
+def update(grid, state, label, zeta=0.02):
     """Sharpen belief at `state` toward `label`, keeping every other label
     at the ζ floor instead of collapsing to a Dirac. Probabilities are
     renormalized so the row still sums to 1."""
