@@ -142,41 +142,34 @@ while next_dfa_state != 'accept_all':
     bot.wait_for_heading_settled()
 
     detected_label, detected_dist, detected_color = detector.detect()
-    assigned_cell = None
-    # New semantics: the camera observes the cell the robot just entered.
-    # Markers placed inside next_physical_state are detected at close range
-    # (less than ASSIGN_DIST_M) right after the boundary crossing.
-    #
-    # Three confidence outcomes for next_physical_state:
-    #   1. Mapped marker close enough -> assign that label to next_physical_state.
-    #   2. Camera saw nothing at all -> confident the cell is empty.
-    #   3. Saw a colour but too far / unmapped -> we know SOMETHING is around
-    #      but can't pin it to next_physical_state. Leave the prior intact.
-    this_iter_observation = None
+    # New semantics: the camera always commits an observation about the cell
+    # the robot just entered. If a mapped marker is detected within
+    # ASSIGN_DIST_M, that label is recorded; otherwise (nothing seen, or
+    # something seen too far / unmapped to attribute) the cell is recorded
+    # as EMPTY.
     if (detected_color is not None
             and detected_label is not None
             and detected_dist < ASSIGN_DIST_M):
-        assigned_cell = next_physical_state
         this_iter_observation = detected_label
-    elif detected_color is None:
-        assigned_cell = next_physical_state
+    else:
         this_iter_observation = EMPTY_LABEL
+    assigned_cell = next_physical_state
 
-    if detected_color is not None:
-        if this_iter_observation is not None:
-            print(
-                f"  [LABEL] detected {detected_color} @ {detected_dist*100:5.1f} cm "
-                f"-> cell {assigned_cell} -> {detected_label}"
-            )
-        else:
-            reason = "too far" if detected_label is not None else "unmapped"
-            print(
-                f"  [LABEL] detected {detected_color} @ {detected_dist*100:5.1f} cm "
-                f"({reason}, belief preserved for cell {next_physical_state})"
-            )
+    if detected_color is not None and this_iter_observation == detected_label:
+        print(
+            f"  [LABEL] detected {detected_color} @ {detected_dist*100:5.1f} cm "
+            f"-> cell {assigned_cell} -> {detected_label}"
+        )
+    elif detected_color is not None:
+        reason = "too far" if detected_label is not None else "unmapped"
+        print(
+            f"  [LABEL] detected {detected_color} @ {detected_dist*100:5.1f} cm "
+            f"({reason}); cell {assigned_cell} recorded as empty"
+        )
+    else:
+        print(f"  [LABEL] nothing in view; cell {assigned_cell} recorded as empty")
 
-    if this_iter_observation is not None:
-        perceived_labels[next_physical_state] = this_iter_observation
+    perceived_labels[next_physical_state] = this_iter_observation
 
     current_value_0 = all_values[current_state]
     plan_neighbors = get_states_within_h_distance(m, n, next_physical_state, p_h)
@@ -226,11 +219,9 @@ while next_dfa_state != 'accept_all':
     visited_states.append(current_physical_state)
     full_physical_traj.append(current_physical_state)
 
-    # Feed the trigger / belief update only when we made a confident
-    # observation about next_physical_state this iteration (saw a known
-    # marker, OR saw nothing at all). "Saw something but too far" is
-    # intentionally excluded so we don't overwrite the prior in ambiguous cases.
-    just_observed = [next_physical_state] if this_iter_observation is not None else []
+    # Every entered cell produces an observation (label or EMPTY), so feed
+    # the trigger / belief update on it.
+    just_observed = [next_physical_state]
 
     previous_probabilities = {}
     neighbor_true_labels   = {}

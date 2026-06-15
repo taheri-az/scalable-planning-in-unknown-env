@@ -151,13 +151,15 @@ def assign_probabilities_g3(n, m, regions, initial_belief=None, zeta=0.002):
     return grid
 
 
-def update(grid, state, label):
-    label_numbers = len(grid[0])
-    for i, (probability, lbl) in enumerate(grid[state]):
-        if lbl == label:
-            grid[state][i] = (1, lbl)
-        else:
-            grid[state][i] = (0 / (label_numbers - 1), lbl)
+def update(grid, state, label, zeta=0.002):
+    """Sharpen belief at `state` toward `label`, keeping every other label
+    at the ζ floor instead of collapsing to a Dirac. Probabilities are
+    renormalized so the row still sums to 1."""
+    raw = []
+    for _prob, lbl in grid[state]:
+        raw.append((1.0 if lbl == label else zeta, lbl))
+    total = sum(p for p, _ in raw)
+    grid[state] = [(p / total, lbl) for p, lbl in raw]
     return grid
 
 
