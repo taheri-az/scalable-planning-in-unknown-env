@@ -76,6 +76,10 @@ class LabelDetector:
         self.cap.set(cv2.CAP_PROP_AUTO_WB, 0)
         self.cap.set(cv2.CAP_PROP_WB_TEMPERATURE, 4500)
         self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+        # Force a single-frame buffer so cap.read() always returns the
+        # freshest frame instead of any buffered older one. Without this,
+        # detect() sometimes runs on a frame from before the last turn.
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         # Let auto-exposure / white-balance settle.
         t0 = time.time()

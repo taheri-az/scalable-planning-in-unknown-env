@@ -136,6 +136,9 @@ while next_dfa_state != 'accept_all':
 
     bot.move(action)
     bot.wait_for_cell_entry()
+    # Let the heading finish settling before reading the camera, so the FOV
+    # matches the action direction (and the marker isn't seen mid-turn).
+    bot.wait_for_heading_settled()
 
     detected_label, detected_dist, detected_color = detector.detect()
     assigned_cell = None

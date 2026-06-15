@@ -280,6 +280,23 @@ class TurtleBot:
         """Block until the robot has crossed into the next cell (halfway through CELL_SIZE)."""
         self._cell_entered.wait()
 
+    def wait_for_heading_settled(self, tolerance=0.08, timeout=1.5):
+        """Block until the robot's actual yaw is within `tolerance` of the
+        last commanded heading, or `timeout` seconds elapses. Useful right
+        before reading the camera so the FOV is aligned with the action
+        direction (and not mid-turn)."""
+        if self._current_yaw_target is None:
+            return
+        deadline = time.time() + timeout
+        while not rospy.is_shutdown() and not self._shutdown and time.time() < deadline:
+            err = math.atan2(
+                math.sin(self._current_yaw_target - self.yaw),
+                math.cos(self._current_yaw_target - self.yaw),
+            )
+            if abs(err) < tolerance:
+                return
+            time.sleep(0.02)
+
     def wait(self):
         """Block until all queued motion has finished and the robot is stopped."""
         self._idle.wait()
