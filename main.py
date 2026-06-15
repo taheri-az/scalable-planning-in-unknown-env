@@ -26,7 +26,7 @@ from turtle_driver import TurtleBot
 from label_detector import LabelDetector
 
 CELL_SIZE_M   = 0.3   # must match TurtleBot.CELL_SIZE
-ASSIGN_DIST_M = 0.30  # marker attributed to the cell just entered when within this
+ASSIGN_DIST_M = 0.35  # marker attributed to the cell just entered when within this
 
 n, m = 4, 4
 p_h = 3
