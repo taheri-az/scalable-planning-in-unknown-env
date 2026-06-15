@@ -26,9 +26,7 @@ from turtle_driver import TurtleBot
 from label_detector import LabelDetector
 
 CELL_SIZE_M   = 0.3   # must match TurtleBot.CELL_SIZE
-ASSIGN_DIST_M = 0.50  # marker is attributed to facing_cell when within this
-                      # (detection fires at the cell boundary, so a marker
-                      # in facing_cell reads ≈ 1.3 * CELL_SIZE_M from the camera)
+ASSIGN_DIST_M = 0.30  # marker attributed to the cell just entered when within this
 
 n, m = 4, 4
 p_h = 3
@@ -145,27 +143,27 @@ while next_dfa_state != 'accept_all':
 
     detected_label, detected_dist, detected_color = detector.detect()
     assigned_cell = None
-    # The cell directly in front of the robot — what the camera is looking at.
-    facing_cell = get_next_state(m, n, next_physical_state, action, adj_org)
-
-    # Decide what (if anything) we can *confidently* say about facing_cell
-    # this iteration. Three outcomes:
-    #   1. Mapped marker close enough -> assign that label to facing_cell.
+    # New semantics: the camera observes the cell the robot just entered.
+    # Markers placed inside next_physical_state are detected at close range
+    # (less than ASSIGN_DIST_M) right after the boundary crossing.
+    #
+    # Three confidence outcomes for next_physical_state:
+    #   1. Mapped marker close enough -> assign that label to next_physical_state.
     #   2. Camera saw nothing at all -> confident the cell is empty.
-    #   3. Saw a colour but too far / unmapped -> we know SOMETHING is ahead
-    #      but can't pin it to facing_cell. Leave the prior belief intact.
+    #   3. Saw a colour but too far / unmapped -> we know SOMETHING is around
+    #      but can't pin it to next_physical_state. Leave the prior intact.
     this_iter_observation = None
-    if facing_cell is not None:
-        if (detected_color is not None
-                and detected_label is not None
-                and detected_dist < ASSIGN_DIST_M):
-            assigned_cell = facing_cell
-            this_iter_observation = detected_label
-        elif detected_color is None:
-            this_iter_observation = EMPTY_LABEL
+    if (detected_color is not None
+            and detected_label is not None
+            and detected_dist < ASSIGN_DIST_M):
+        assigned_cell = next_physical_state
+        this_iter_observation = detected_label
+    elif detected_color is None:
+        assigned_cell = next_physical_state
+        this_iter_observation = EMPTY_LABEL
 
     if detected_color is not None:
-        if assigned_cell is not None:
+        if this_iter_observation is not None:
             print(
                 f"  [LABEL] detected {detected_color} @ {detected_dist*100:5.1f} cm "
                 f"-> cell {assigned_cell} -> {detected_label}"
@@ -174,11 +172,11 @@ while next_dfa_state != 'accept_all':
             reason = "too far" if detected_label is not None else "unmapped"
             print(
                 f"  [LABEL] detected {detected_color} @ {detected_dist*100:5.1f} cm "
-                f"({reason}, belief preserved for cell {facing_cell})"
+                f"({reason}, belief preserved for cell {next_physical_state})"
             )
 
-    if facing_cell is not None and this_iter_observation is not None:
-        perceived_labels[facing_cell] = this_iter_observation
+    if this_iter_observation is not None:
+        perceived_labels[next_physical_state] = this_iter_observation
 
     current_value_0 = all_values[current_state]
     plan_neighbors = get_states_within_h_distance(m, n, next_physical_state, p_h)
@@ -219,23 +217,20 @@ while next_dfa_state != 'accept_all':
         current_value_0 = all_values[current_state]
         print(f"  [replan #{counter}] policy computed in {p_t_i*1000:.1f} ms | value after: {current_value_0:8.2f}")
 
-    # Mark as explored: the cell the robot has been in, the cell it just
-    # entered, and the cell it is facing (which we observed this iteration).
-    # No Manhattan neighbourhood claim — the forward-facing camera can't see
-    # sideways.
-    for s in (current_physical_state, next_physical_state, facing_cell):
+    # Mark as explored: the cells the robot has been in and the cell it just
+    # entered. No claims about cells beyond — the camera only labels the
+    # cell being entered now.
+    for s in (current_physical_state, next_physical_state):
         if s is not None and s not in visited_states_un:
             visited_states_un.append(s)
     visited_states.append(current_physical_state)
     full_physical_traj.append(current_physical_state)
 
-    # Only feed the trigger / belief update when we made a confident
-    # observation about facing_cell this iteration (saw a known marker, OR
-    # saw nothing at all). "Saw something but too far" is intentionally
-    # excluded — we don't want to overwrite the prior in that ambiguous case.
-    just_observed = [facing_cell] if (
-        facing_cell is not None and this_iter_observation is not None
-    ) else []
+    # Feed the trigger / belief update only when we made a confident
+    # observation about next_physical_state this iteration (saw a known
+    # marker, OR saw nothing at all). "Saw something but too far" is
+    # intentionally excluded so we don't overwrite the prior in ambiguous cases.
+    just_observed = [next_physical_state] if this_iter_observation is not None else []
 
     previous_probabilities = {}
     neighbor_true_labels   = {}
