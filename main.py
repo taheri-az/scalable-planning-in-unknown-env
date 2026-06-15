@@ -179,7 +179,21 @@ while next_dfa_state != 'accept_all':
     else:
         print(f"  [LABEL] nothing in view; cell {assigned_cell} recorded as empty")
 
-    perceived_labels[next_physical_state] = this_iter_observation
+    # Sticky labels: once we've observed a non-EMPTY label for a cell, never
+    # overwrite it. The environment is static, so a confirmed marker stays.
+    # EMPTY observations are NOT sticky (we might just have missed the marker
+    # on the first visit and want to update on a later one).
+    prior_observation = perceived_labels.get(next_physical_state)
+    if prior_observation is None or prior_observation == EMPTY_LABEL:
+        perceived_labels[next_physical_state] = this_iter_observation
+    else:
+        if this_iter_observation != prior_observation:
+            print(
+                f"  [LABEL] cell {next_physical_state} already labelled "
+                f"{prior_observation!r}; keeping it (sticky)."
+            )
+        # Trigger / belief update should skip this cell — already committed.
+        this_iter_observation = None
 
     current_value_0 = all_values[current_state]
     plan_neighbors = get_states_within_h_distance(m, n, next_physical_state, p_h)
@@ -229,9 +243,12 @@ while next_dfa_state != 'accept_all':
     visited_states.append(current_physical_state)
     full_physical_traj.append(current_physical_state)
 
-    # Every entered cell produces an observation (label or EMPTY), so feed
-    # the trigger / belief update on it.
-    just_observed = [next_physical_state]
+    # Feed the trigger / belief update on the cell just entered, but only
+    # when we made a fresh observation (this_iter_observation was set above
+    # to None when the cell is sticky-labelled and we kept the prior).
+    just_observed = (
+        [next_physical_state] if this_iter_observation is not None else []
+    )
 
     previous_probabilities = {}
     neighbor_true_labels   = {}
