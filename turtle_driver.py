@@ -58,8 +58,8 @@ class TurtleBot:
     }
 
     # Hard motion limits (TB3 Burger: 0.22 m/s, ~2.84 rad/s)
-    LINEAR_SPEED    = 0.05
-    ANGULAR_SPEED   = 1.5
+    LINEAR_SPEED    = 0.035   # 30% slower than 0.05
+    ANGULAR_SPEED   = 1.05    # 30% slower than 1.5
 
     # Linear velocity held during a heading change. Nonzero so the robot
     # arcs through corners instead of pivoting in place.
