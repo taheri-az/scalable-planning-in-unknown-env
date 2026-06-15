@@ -88,8 +88,8 @@ def detect_object(frame, lower_hsv, upper_hsv, min_area=500):
 
 def save_calibration(focal_length_px, real_width):
     with open(CALIB_FILE, "w") as f:
-        json.dump({"focal_length_px": focal_length_px,
-                   "real_width": real_width}, f, indent=2)
+        json.dump({"focal_length_px": float(focal_length_px),
+                   "real_width": float(real_width)}, f, indent=2)
 
 
 def load_calibration():
@@ -124,9 +124,13 @@ def load_hsv_bounds(color):
 
 
 def save_hsv_bounds(color, lower, upper):
-    """Update only the selected colour; preserve the others."""
+    """Update only the selected colour; preserve the others.
+    Coerces numpy ints to plain Python ints so json.dump won't choke."""
     all_b = _load_all_bounds()
-    all_b[color] = {"lower": list(lower), "upper": list(upper)}
+    all_b[color] = {
+        "lower": [int(v) for v in lower],
+        "upper": [int(v) for v in upper],
+    }
     with open(HSV_FILE, "w") as f:
         json.dump(all_b, f, indent=2)
 
