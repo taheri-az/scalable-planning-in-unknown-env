@@ -141,16 +141,16 @@ while next_dfa_state != 'accept_all':
     bot.move(action)
     bot.wait_for_cell_entry()
 
-    detected_label, detected_dist = detector.detect()
+    detected_label, detected_dist, detected_color = detector.detect()
     assigned_cell = None
-    if detected_label is not None:
+    if detected_color is not None:
         # The robot has just entered next_physical_state and is still facing `action`.
         # The cell directly in front of it (one step further along `action`) is the
         # cell we tentatively assign the marker to when distance < CELL_SIZE_M.
         facing_cell = get_next_state(m, n, next_physical_state, action, adj_org)
         if detected_dist < CELL_SIZE_M:
             assigned_cell = facing_cell if facing_cell is not None else next_physical_state
-            assigned_label = 'next'
+            assigned_kind = 'next'
         else:
             # Marker is farther — assume one extra cell per CELL_SIZE_M of distance
             # beyond the half-cell boundary, walking forward along `action`.
@@ -162,14 +162,15 @@ while next_dfa_state != 'accept_all':
                     break
                 cell = nxt
             assigned_cell = cell
-            assigned_label = f'{n_ahead}-ahead'
+            assigned_kind = f'{n_ahead}-ahead'
+        dfa_tag = f"-> {detected_label}" if detected_label is not None else "(unmapped)"
         print(
-            f"  [LABEL] detected red (a) @ {detected_dist*100:5.1f} cm "
-            f"-> assigned to cell {assigned_cell} ({assigned_label})"
+            f"  [LABEL] detected {detected_color} @ {detected_dist*100:5.1f} cm "
+            f"-> assigned to cell {assigned_cell} ({assigned_kind}) {dfa_tag}"
         )
-        # Record the camera's verdict so DFA + belief update use it instead of
-        # any prior ground-truth lookup.
-        if assigned_cell is not None:
+        # Only colours mapped to a DFA proposition affect the planner; yellow
+        # and orange are observed and reported but don't change perceived_labels.
+        if assigned_cell is not None and detected_label is not None:
             perceived_labels[assigned_cell] = detected_label
 
     current_value_0 = all_values[current_state]

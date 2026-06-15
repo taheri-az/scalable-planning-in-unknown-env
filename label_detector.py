@@ -21,8 +21,15 @@ CALIB_PATH      = Path(__file__).parent / "Camera_tu" / "calibration.json"
 HSV_BOUNDS_PATH = Path(__file__).parent / "Camera_tu" / "hsv_bounds.json"
 
 # Colour → label string used by the planner / DFA.
+# Only red/blue/green map to the formula's atomic propositions (a, b, c).
+# Yellow / orange are detected and shown in the recording but produce no DFA
+# transition (label = None) — useful for verifying perception independently.
 COLOR_LABEL = {
-    "red": "a && !b && !c",
+    "red":    "a && !b && !c",
+    "blue":   "!a && b && !c",
+    "green":  "!a && !b && c",
+    "yellow": None,
+    "orange": None,
 }
 EMPTY_LABEL = "!a && !b && !c"
 
@@ -43,10 +50,17 @@ class LabelDetector:
         self.focal_px      = float(calib["focal_length_px"])
         self.real_width_cm = float(calib["real_width"])
 
+        # Load HSV bounds; supports new multi-colour format
+        # {color: {lower, upper}} and the legacy single-colour {lower, upper}.
         with open(HSV_BOUNDS_PATH) as f:
-            bounds = json.load(f)
-        self.hsv_lo = np.array(bounds["lower"], dtype=np.int32)
-        self.hsv_hi = np.array(bounds["upper"], dtype=np.int32)
+            raw = json.load(f)
+        if "lower" in raw and "upper" in raw:
+            raw = {"red": {"lower": raw["lower"], "upper": raw["upper"]}}
+        self._color_bounds = {
+            color: (np.array(entry["lower"], dtype=np.int32),
+                    np.array(entry["upper"], dtype=np.int32))
+            for color, entry in raw.items()
+        }
 
         self.min_area_px = min_area_px
         self._frame_size = (frame_width, frame_height)
@@ -108,41 +122,59 @@ class LabelDetector:
             if now - last_write < write_interval:
                 continue
             annotated = frame.copy()
-            label, dist_m, bbox = self._detect_in_frame(annotated)
-            self._annotate(annotated, label, dist_m, bbox)
+            label, dist_m, bbox, color = self._detect_in_frame(annotated)
+            self._annotate(annotated, label, dist_m, bbox, color)
             self._writer.write(annotated)
             last_write = now
 
     def _detect_in_frame(self, frame):
-        """Returns (label_str, distance_m, (x, y, w, h)) or (None, None, None)."""
-        mask = self._color_mask(frame)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return None, None, None
-        biggest = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(biggest) < self.min_area_px:
-            return None, None, None
-        x, y, w, h = cv2.boundingRect(biggest)
-        if w <= 0:
-            return None, None, None
+        """
+        Scan every configured colour, pick the largest valid blob across all,
+        and return (label_str_or_None, distance_m, (x, y, w, h), color_name).
+        Returns (None, None, None, None) if nothing meets `min_area_px`.
+
+        label_str is None when the detected colour isn't mapped to a DFA
+        proposition (e.g. yellow / orange) — useful for verifying perception
+        without affecting the planner.
+        """
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        best_area = 0
+        best = None
+        for color, (lo, hi) in self._color_bounds.items():
+            mask = self._color_mask(hsv, lo, hi)
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                continue
+            biggest = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(biggest)
+            if area < self.min_area_px or area <= best_area:
+                continue
+            x, y, w, h = cv2.boundingRect(biggest)
+            if w <= 0:
+                continue
+            best_area = area
+            best = (color, x, y, w, h)
+        if best is None:
+            return None, None, None, None
+        color, x, y, w, h = best
         distance_cm = (self.real_width_cm * self.focal_px) / w
         distance_m  = distance_cm / 100.0
-        return COLOR_LABEL["red"], distance_m, (x, y, w, h)
+        return COLOR_LABEL.get(color), distance_m, (x, y, w, h), color
 
     @staticmethod
-    def _annotate(frame, label, distance_m, bbox):
+    def _annotate(frame, label, distance_m, bbox, color=None):
         if bbox is None:
             return
         x, y, w, h = bbox
         cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-        cv2.putText(frame, str(label), (x, max(y - 28, 18)),
+        text_top = color if color is not None else str(label)
+        cv2.putText(frame, text_top, (x, max(y - 28, 18)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
         cv2.putText(frame, f"{distance_m * 100:.1f} cm", (x, max(y - 6, 36)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
 
-    def _color_mask(self, frame):
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        lo, hi = self.hsv_lo, self.hsv_hi
+    @staticmethod
+    def _color_mask(hsv, lo, hi):
         if lo[0] <= hi[0]:
             mask = cv2.inRange(hsv, lo, hi)
         else:
@@ -157,15 +189,17 @@ class LabelDetector:
 
     def detect(self):
         """
-        Look at the most recent frame, find the marker, and return
-        (label_str, distance_m). Returns (None, None) if nothing detected.
+        Look at the most recent frame, find the strongest colour marker, and
+        return (label_str_or_None, distance_m, color_name). The label is None
+        if the detected colour isn't mapped to a DFA proposition. Returns
+        (None, None, None) if nothing meets the minimum area.
         """
         with self._frame_lock:
             if self._latest_frame is None:
-                return None, None
+                return None, None, None
             frame = self._latest_frame.copy()
-        label, dist_m, _bbox = self._detect_in_frame(frame)
-        return label, dist_m
+        label, dist_m, _bbox, color = self._detect_in_frame(frame)
+        return label, dist_m, color
 
     def close(self):
         self._shutdown = True

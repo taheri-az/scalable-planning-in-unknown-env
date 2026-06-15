@@ -7,6 +7,19 @@ import cv2
 import numpy as np
 
 CALIB_FILE = "calibration.json"
+HSV_FILE   = "hsv_bounds.json"
+
+# Reasonable starting points for each colour; the user tunes from here.
+# HSV with H in [0, 179], S/V in [0, 255]. Red wraps around 0/180, so we
+# encode it as lo[0] > hi[0]; detect_object() handles that wrap.
+DEFAULT_HSV = {
+    "red":    ([170, 120,  70], [ 10, 255, 255]),
+    "blue":   ([100, 120,  70], [130, 255, 255]),
+    "green":  ([ 35,  80,  60], [ 85, 255, 255]),
+    "yellow": ([ 20, 120,  90], [ 35, 255, 255]),
+    "orange": ([  5, 120,  90], [ 18, 255, 255]),
+}
+COLORS = list(DEFAULT_HSV.keys())
 
 
 def nothing(_):
@@ -86,14 +99,51 @@ def load_calibration():
         return json.load(f)
 
 
-def calibrate(cap, real_width, known_distance):
+# ---------- multi-colour HSV-bounds persistence ----------
+
+def _load_all_bounds():
+    """Return {color: {"lower": [...], "upper": [...]}}.
+    Tolerates the old single-colour format by promoting it to {"red": ...}."""
+    if not os.path.exists(HSV_FILE):
+        return {}
+    with open(HSV_FILE) as f:
+        data = json.load(f)
+    if isinstance(data, dict) and "lower" in data and "upper" in data:
+        return {"red": {"lower": data["lower"], "upper": data["upper"]}}
+    return data
+
+
+def load_hsv_bounds(color):
+    """(lower_list, upper_list) for the given colour, or its default."""
+    all_b = _load_all_bounds()
+    if color in all_b:
+        entry = all_b[color]
+        return list(entry["lower"]), list(entry["upper"])
+    lo, hi = DEFAULT_HSV[color]
+    return list(lo), list(hi)
+
+
+def save_hsv_bounds(color, lower, upper):
+    """Update only the selected colour; preserve the others."""
+    all_b = _load_all_bounds()
+    all_b[color] = {"lower": list(lower), "upper": list(upper)}
+    with open(HSV_FILE, "w") as f:
+        json.dump(all_b, f, indent=2)
+
+
+# ---------- main flows ----------
+
+def calibrate(cap, real_width, known_distance, color):
     """Compute focal length: F = (P * D) / W, where
     P = perceived pixel width, D = known distance, W = real width."""
-    window = "Calibration - press SPACE when object is locked, q to quit"
-    tuner = make_hsv_window("HSV Tuner (calibration)")
-    print(f"\nCALIBRATION: hold the object at {known_distance} units from "
-          f"the camera.\nTune the HSV trackbars until the object is cleanly "
-          f"isolated, then press SPACE to capture.\n")
+    window = f"Calibration [{color}] - SPACE to capture, q to quit"
+    lo_init, hi_init = load_hsv_bounds(color)
+    tuner = make_hsv_window(f"HSV Tuner (calibration: {color})",
+                            initial=(*lo_init, *hi_init))
+    print(f"\nCALIBRATION [{color}]: hold the {color} marker at "
+          f"{known_distance} units from the camera.\n"
+          f"Tune the HSV trackbars until the marker is cleanly isolated, "
+          f"then press SPACE.\n")
 
     focal_length = None
     while True:
@@ -113,11 +163,11 @@ def calibrate(cap, real_width, known_distance):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
         cv2.putText(display,
-                    f"SPACE = capture at D={known_distance}, W={real_width}",
+                    f"[{color}] SPACE = capture at D={known_distance}, W={real_width}",
                     (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                     (255, 255, 255), 2)
         cv2.imshow(window, display)
-        cv2.imshow("Mask (calibration)", mask)
+        cv2.imshow(f"Mask ({color})", mask)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
@@ -126,26 +176,22 @@ def calibrate(cap, real_width, known_distance):
             pixel_width = bbox[2]
             focal_length = (pixel_width * known_distance) / real_width
             save_calibration(focal_length, real_width)
-            # Also persist the HSV bounds the user dialed in.
-            with open("hsv_bounds.json", "w") as f:
-                json.dump({"lower": lo.tolist(), "upper": hi.tolist()}, f)
-            print(f"Captured. focal_length = {focal_length:.2f} px")
+            save_hsv_bounds(color, lo, hi)
+            print(f"Captured. focal_length = {focal_length:.2f} px "
+                  f"(HSV bounds saved for {color})")
             break
 
     cv2.destroyWindow(window)
-    cv2.destroyWindow("Mask (calibration)")
-    cv2.destroyWindow(tuner)
+    cv2.destroyWindow(f"Mask ({color})")
+    cv2.destroyWindow(f"HSV Tuner (calibration: {color})")
     return focal_length
 
 
-def run_estimation(cap, focal_length, real_width):
-    window = "Distance Estimation - q to quit"
-    initial = (0, 120, 70, 10, 255, 255)
-    if os.path.exists("hsv_bounds.json"):
-        with open("hsv_bounds.json") as f:
-            saved = json.load(f)
-        initial = (*saved["lower"], *saved["upper"])
-    tuner = make_hsv_window("HSV Tuner", initial=initial)
+def run_estimation(cap, focal_length, real_width, color):
+    window = f"Distance Estimation [{color}] - q to quit, s to save HSV"
+    lo_init, hi_init = load_hsv_bounds(color)
+    tuner = make_hsv_window(f"HSV Tuner ({color})",
+                            initial=(*lo_init, *hi_init))
 
     while True:
         ok, frame = cap.read()
@@ -159,23 +205,26 @@ def run_estimation(cap, focal_length, real_width):
         display = frame.copy()
         if bbox is not None:
             x, y, w, h = bbox
-            # Similar triangles: D = (W * F) / P
-            distance = (real_width * focal_length) / w
+            distance = (real_width * focal_length) / w   # similar triangles
             cv2.rectangle(display, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            cv2.putText(display, f"{distance:.2f} units",
+            cv2.putText(display, f"[{color}] {distance:.2f} units",
                         (x, max(y - 10, 20)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             cv2.putText(display, f"px width: {w}", (x, y + h + 22),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
         else:
-            cv2.putText(display, "no object detected", (10, 30),
+            cv2.putText(display, f"[{color}] no object detected", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
         cv2.imshow(window, display)
-        cv2.imshow("Mask", mask)
+        cv2.imshow(f"Mask ({color})", mask)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
             break
+        if key == ord('s'):
+            save_hsv_bounds(color, lo, hi)
+            print(f"HSV bounds saved for {color}.")
 
     cv2.destroyAllWindows()
 
@@ -183,17 +232,22 @@ def run_estimation(cap, focal_length, real_width):
 def main():
     parser = argparse.ArgumentParser(
         description="Monocular distance estimation via color detection.")
+    parser.add_argument("--color", choices=COLORS, default="red",
+                        help="Colour to calibrate / detect (default red).")
     parser.add_argument("--width", type=float, default=7.5,
-                        help="Real width of the object in cm (default 7.5).")
+                        help="Real width of the marker in cm (default 7.5 — "
+                             "the longer side of the 7.5x6.5 marker; orient it "
+                             "with that side running left-right in the frame).")
     parser.add_argument("--distance", type=float,
                         help="Known distance during calibration "
-                             "(same units as --width). Required on first run.")
+                             "(same units as --width). Required on first run "
+                             "or with --recalibrate.")
     parser.add_argument("--camera", type=int, default=2,
                         help="Camera index (default 2 = secondary webcam; "
-                             "0 is the built-in. Note: /dev/video1 and "
-                             "/dev/video3 are metadata-only sub-devices.)")
+                             "0 is the built-in. /dev/video1 and "
+                             "/dev/video3 are typically metadata-only nodes.)")
     parser.add_argument("--recalibrate", action="store_true",
-                        help="Force a fresh calibration even if one is saved.")
+                        help="Force a fresh focal-length capture even if one is saved.")
     args = parser.parse_args()
 
     cap = cv2.VideoCapture(args.camera)
@@ -211,15 +265,16 @@ def main():
                   "--distance.", file=sys.stderr)
             cap.release()
             sys.exit(1)
-        focal_length = calibrate(cap, args.width, args.distance)
+        focal_length = calibrate(cap, args.width, args.distance, args.color)
         if focal_length is None:
             cap.release()
             sys.exit(1)
     else:
         focal_length = calib["focal_length_px"]
-        print(f"Loaded calibration: focal_length = {focal_length:.2f} px")
+        print(f"Loaded calibration: focal_length = {focal_length:.2f} px "
+              f"(tuning HSV for {args.color}; press 's' in the window to save).")
 
-    run_estimation(cap, focal_length, args.width)
+    run_estimation(cap, focal_length, args.width, args.color)
     cap.release()
 
 
