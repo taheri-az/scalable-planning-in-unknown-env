@@ -54,6 +54,53 @@ def read_hsv_bounds(window_name):
     return lo, hi
 
 
+class HSVPicker:
+    """Mouse-driven HSV sampler.
+
+    - Hover prints the HSV under the cursor.
+    - Click samples a small patch around the cursor and produces (h, s, v)
+      means to seed the trackbars with sensible bounds.
+    """
+    def __init__(self):
+        self.frame_hsv  = None
+        self.hover_hsv  = None
+        self.clicked    = None        # last sampled (h, s, v), consumed by main loop
+
+    def set_frame(self, frame_hsv):
+        self.frame_hsv = frame_hsv
+
+    def on_mouse(self, event, x, y, flags, _):
+        if self.frame_hsv is None:
+            return
+        H, W = self.frame_hsv.shape[:2]
+        if not (0 <= x < W and 0 <= y < H):
+            return
+        self.hover_hsv = tuple(int(v) for v in self.frame_hsv[y, x])
+        if event == cv2.EVENT_LBUTTONDOWN:
+            half = 5
+            y0, y1 = max(0, y - half), min(H, y + half)
+            x0, x1 = max(0, x - half), min(W, x + half)
+            patch  = self.frame_hsv[y0:y1, x0:x1].reshape(-1, 3)
+            self.clicked = tuple(int(v) for v in patch.mean(axis=0))
+
+
+def _apply_clicked_bounds_to_trackbars(tuner, hsv_sample,
+                                       h_pad=8, s_pad=30, v_pad=30):
+    """Given an (h, s, v) sample, seed the trackbars with sensible bounds:
+    H ± h_pad (wraps for red), S in [s - s_pad, 255], V in [v - v_pad, 255]."""
+    h, s, v = hsv_sample
+    h_lo = (h - h_pad) % 180
+    h_hi = (h + h_pad) % 180
+    s_lo = max(0, s - s_pad)
+    v_lo = max(0, v - v_pad)
+    cv2.setTrackbarPos("H lo", tuner, int(h_lo))
+    cv2.setTrackbarPos("H hi", tuner, int(h_hi))
+    cv2.setTrackbarPos("S lo", tuner, int(s_lo))
+    cv2.setTrackbarPos("S hi", tuner, 255)
+    cv2.setTrackbarPos("V lo", tuner, int(v_lo))
+    cv2.setTrackbarPos("V hi", tuner, 255)
+
+
 def detect_object(frame, lower_hsv, upper_hsv, min_area=500):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
@@ -144,10 +191,13 @@ def calibrate(cap, real_width, known_distance, color):
     lo_init, hi_init = load_hsv_bounds(color)
     tuner = make_hsv_window(f"HSV Tuner (calibration: {color})",
                             initial=(*lo_init, *hi_init))
+    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    picker = HSVPicker()
+    cv2.setMouseCallback(window, picker.on_mouse)
     print(f"\nCALIBRATION [{color}]: hold the {color} marker at "
           f"{known_distance} units from the camera.\n"
-          f"Tune the HSV trackbars until the marker is cleanly isolated, "
-          f"then press SPACE.\n")
+          f"Click the marker to auto-seed the HSV bounds, fine-tune with the "
+          f"trackbars, then press SPACE.\n")
 
     focal_length = None
     while True:
@@ -155,6 +205,12 @@ def calibrate(cap, real_width, known_distance, color):
         if not ok:
             print("Camera read failed.", file=sys.stderr)
             return None
+
+        hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        picker.set_frame(hsv_frame)
+        if picker.clicked is not None:
+            _apply_clicked_bounds_to_trackbars(tuner, picker.clicked)
+            picker.clicked = None
 
         lo, hi = read_hsv_bounds(tuner)
         bbox, mask = detect_object(frame, lo, hi)
@@ -167,9 +223,15 @@ def calibrate(cap, real_width, known_distance, color):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
         cv2.putText(display,
-                    f"[{color}] SPACE = capture at D={known_distance}, W={real_width}",
-                    (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                    f"[{color}] SPACE=capture D={known_distance} W={real_width}  click=sample HSV",
+                    (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                     (255, 255, 255), 2)
+        if picker.hover_hsv is not None:
+            cv2.putText(display,
+                        f"hover HSV: H={picker.hover_hsv[0]} "
+                        f"S={picker.hover_hsv[1]} V={picker.hover_hsv[2]}",
+                        (10, display.shape[0] - 12),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
         cv2.imshow(window, display)
         cv2.imshow(f"Mask ({color})", mask)
 
@@ -192,16 +254,26 @@ def calibrate(cap, real_width, known_distance, color):
 
 
 def run_estimation(cap, focal_length, real_width, color):
-    window = f"Distance Estimation [{color}] - q to quit, s to save HSV"
+    window = f"Distance Estimation [{color}] - q to quit, s to save HSV, click to sample"
     lo_init, hi_init = load_hsv_bounds(color)
     tuner = make_hsv_window(f"HSV Tuner ({color})",
                             initial=(*lo_init, *hi_init))
+    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    picker = HSVPicker()
+    cv2.setMouseCallback(window, picker.on_mouse)
 
     while True:
         ok, frame = cap.read()
         if not ok:
             print("Camera read failed.", file=sys.stderr)
             break
+
+        hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        picker.set_frame(hsv_frame)
+        if picker.clicked is not None:
+            _apply_clicked_bounds_to_trackbars(tuner, picker.clicked)
+            print(f"Sampled HSV {picker.clicked} -> trackbars seeded for {color}.")
+            picker.clicked = None
 
         lo, hi = read_hsv_bounds(tuner)
         bbox, mask = detect_object(frame, lo, hi)
@@ -219,6 +291,13 @@ def run_estimation(cap, focal_length, real_width, color):
         else:
             cv2.putText(display, f"[{color}] no object detected", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+        if picker.hover_hsv is not None:
+            cv2.putText(display,
+                        f"hover HSV: H={picker.hover_hsv[0]} "
+                        f"S={picker.hover_hsv[1]} V={picker.hover_hsv[2]}",
+                        (10, display.shape[0] - 12),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
         cv2.imshow(window, display)
         cv2.imshow(f"Mask ({color})", mask)
@@ -258,6 +337,13 @@ def main():
     if not cap.isOpened():
         print(f"Could not open camera {args.camera}.", file=sys.stderr)
         sys.exit(1)
+
+    # Lock auto-white-balance and autofocus so hues / sharpness stay
+    # stable while tuning. Some C270 firmware ignores these via OpenCV;
+    # if so, the v4l2-ctl commands in the README handle it for you.
+    cap.set(cv2.CAP_PROP_AUTO_WB, 0)
+    cap.set(cv2.CAP_PROP_WB_TEMPERATURE, 4500)
+    cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
 
     calib = load_calibration()
     needs_calib = args.recalibrate or calib is None or \

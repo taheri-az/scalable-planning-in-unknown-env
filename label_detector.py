@@ -71,6 +71,11 @@ class LabelDetector:
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,  frame_width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, frame_height)
+        # Lock auto-white-balance and autofocus so colour bounds tuned on the
+        # laptop carry over to the robot without hue drift.
+        self.cap.set(cv2.CAP_PROP_AUTO_WB, 0)
+        self.cap.set(cv2.CAP_PROP_WB_TEMPERATURE, 4500)
+        self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
 
         # Let auto-exposure / white-balance settle.
         t0 = time.time()
