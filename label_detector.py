@@ -21,14 +21,14 @@ CALIB_PATH      = Path(__file__).parent / "Camera_tu" / "calibration.json"
 HSV_BOUNDS_PATH = Path(__file__).parent / "Camera_tu" / "hsv_bounds.json"
 
 # Colour → label string used by the planner / DFA.
-# Only red/blue/green map to the formula's atomic propositions (a, b, c).
-# Yellow / orange are detected and shown in the recording but produce no DFA
+# Mapping for this experiment: red → a, yellow → b, green → c.
+# Blue and orange are detected and shown in the recording but produce no DFA
 # transition (label = None) — useful for verifying perception independently.
 COLOR_LABEL = {
     "red":    "a && !b && !c",
-    "blue":   "!a && b && !c",
+    "yellow": "!a && b && !c",
     "green":  "!a && !b && c",
-    "yellow": None,
+    "blue":   None,
     "orange": None,
 }
 EMPTY_LABEL = "!a && !b && !c"

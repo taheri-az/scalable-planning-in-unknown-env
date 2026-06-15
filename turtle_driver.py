@@ -66,7 +66,7 @@ class TurtleBot:
     TURN_LINEAR_SPEED = 0.04
 
     # Physical cell size — robot traverses CELL_SIZE meters between cell centers.
-    CELL_SIZE       = 0.4
+    CELL_SIZE       = 0.3
 
     # PID gains — tuned for TB3 Burger; tune for your bot if needed.
     KP_ANG, KI_ANG, KD_ANG = 3.0, 0.0, 0.3

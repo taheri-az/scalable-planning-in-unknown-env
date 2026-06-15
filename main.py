@@ -25,9 +25,9 @@ from visualization import generate_grid_environment
 from turtle_driver import TurtleBot
 from label_detector import LabelDetector
 
-CELL_SIZE_M = 0.4  # must match TurtleBot.CELL_SIZE
+CELL_SIZE_M = 0.3  # must match TurtleBot.CELL_SIZE
 
-n, m = 20, 20
+n, m = 4, 4
 p_h = 3
 initial_p_h = p_h
 policy_p_h = p_h
@@ -54,10 +54,10 @@ print(f"Product automaton construction time: {time.time() - time_ps:.3f}s")
 
 transitions = list(dict.fromkeys(transitions))
 
-a_prior_cells = [1, 2, 3, 4, 5]
 initial_belief = {
-    s: {'a && !b && !c': 0.5, '!a && !b && !c': 0.5}
-    for s in a_prior_cells
+    2:  {'a && !b && !c': 0.8, '!a && !b && !c': 0.2},   # cell 2  expects red    (a)
+    10: {'!a && b && !c': 0.8, '!a && !b && !c': 0.2},   # cell 10 expects yellow (b)
+    15: {'!a && !b && c': 0.8, '!a && !b && !c': 0.2},   # cell 15 expects green  (c)
 }
 belief = assign_probabilities_g3(n, m, atomic_props, initial_belief=initial_belief)
 observation_probabilities = belief
