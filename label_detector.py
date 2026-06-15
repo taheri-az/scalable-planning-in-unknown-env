@@ -166,8 +166,6 @@ class LabelDetector:
         without affecting the planner.
         """
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        H, W = frame.shape[:2]
-        EDGE_MARGIN = 4  # px — reject contours whose bbox touches the frame edges
         best_area = 0
         best = None
         for color, (lo, hi) in self._color_bounds.items():
@@ -182,19 +180,17 @@ class LabelDetector:
             x, y, w, h = cv2.boundingRect(biggest)
             if w <= 0:
                 continue
-            # Reject clipped markers: when the marker is too close (or partially
-            # outside the FOV) the bbox snaps to the frame edge and the pinhole
-            # formula returns a garbage distance. Only trust fully-visible
-            # bounding boxes for distance estimation.
-            if (x <= EDGE_MARGIN or y <= EDGE_MARGIN
-                    or x + w >= W - EDGE_MARGIN
-                    or y + h >= H - EDGE_MARGIN):
-                continue
             best_area = area
             best = (color, x, y, w, h)
         if best is None:
             return None, None, None, None
         color, x, y, w, h = best
+        # Note: when the marker is clipped at the frame edge (typical at very
+        # close range), `w` underestimates the true projected width — the
+        # pinhole formula then returns an artificially small distance. We
+        # accept that: a clipped detection is itself a strong signal that we
+        # are essentially on top of the marker, and the small reported
+        # distance correctly falls under the assignment threshold.
         distance_cm = (self.real_width_cm * self.focal_px) / w
         distance_m  = distance_cm / 100.0
         return COLOR_LABEL.get(color), distance_m, (x, y, w, h), color
