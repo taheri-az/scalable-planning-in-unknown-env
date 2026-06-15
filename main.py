@@ -139,13 +139,13 @@ while next_dfa_state != 'accept_all':
 
     detected_label, detected_dist, detected_color = detector.detect()
     assigned_cell = None
+    # The cell directly in front of the robot — what the camera is looking at.
+    facing_cell = get_next_state(m, n, next_physical_state, action, adj_org)
+
     if detected_color is not None:
-        # The robot has just entered next_physical_state and is still facing
-        # `action`. Only trust a detection if the marker is within one cell of
-        # the camera — closer than CELL_SIZE_M. Anything farther is too noisy
-        # to assign reliably, so we ignore it and wait until the robot is
-        # closer.
-        facing_cell = get_next_state(m, n, next_physical_state, action, adj_org)
+        # Only trust a detection if the marker is within one cell of the
+        # camera (closer than CELL_SIZE_M). Anything farther is too noisy to
+        # assign reliably.
         if detected_dist < CELL_SIZE_M and facing_cell is not None:
             assigned_cell = facing_cell
             dfa_tag = f"-> {detected_label}" if detected_label is not None else "(unmapped)"
@@ -153,16 +153,21 @@ while next_dfa_state != 'accept_all':
                 f"  [LABEL] detected {detected_color} @ {detected_dist*100:5.1f} cm "
                 f"-> cell {assigned_cell} {dfa_tag}"
             )
-            # Only colours mapped to a DFA proposition affect the planner;
-            # yellow and orange are observed and reported but don't change
-            # perceived_labels.
-            if detected_label is not None:
-                perceived_labels[assigned_cell] = detected_label
         else:
             print(
                 f"  [LABEL] detected {detected_color} @ {detected_dist*100:5.1f} cm "
                 f"(too far, not assigned)"
             )
+
+    # Record the observation about the facing cell. A mapped marker within
+    # range overwrites with its label; anything else (no detection, unmapped
+    # colour, or out-of-range) is treated as "observed empty" so the trigger
+    # can react to "expected a label, saw none".
+    if facing_cell is not None:
+        if assigned_cell == facing_cell and detected_label is not None:
+            perceived_labels[facing_cell] = detected_label
+        else:
+            perceived_labels[facing_cell] = EMPTY_LABEL
 
     current_value_0 = all_values[current_state]
     plan_neighbors = get_states_within_h_distance(m, n, next_physical_state, p_h)
@@ -204,20 +209,18 @@ while next_dfa_state != 'accept_all':
         print(f"  [replan #{counter}] policy computed in {p_t_i*1000:.1f} ms | value after: {current_value_0:8.2f}")
 
     # Mark as explored: the cell the robot has been in, the cell it just
-    # entered, and the cell it just perceived (if any). No Manhattan
-    # neighbourhood claim — the forward-facing camera can't see sideways.
-    for s in (current_physical_state, next_physical_state, assigned_cell):
+    # entered, and the cell it is facing (which we observed this iteration).
+    # No Manhattan neighbourhood claim — the forward-facing camera can't see
+    # sideways.
+    for s in (current_physical_state, next_physical_state, facing_cell):
         if s is not None and s not in visited_states_un:
             visited_states_un.append(s)
     visited_states.append(current_physical_state)
     full_physical_traj.append(current_physical_state)
 
-    # Trigger / belief update only on the cell freshly perceived this
-    # iteration. perceived_labels still accumulates across the whole run for
-    # the DFA transition, but the trigger reacts only to *new* observations.
-    just_observed = []
-    if assigned_cell is not None and detected_label is not None:
-        just_observed = [assigned_cell]
+    # The facing cell is observed every step (with EMPTY_LABEL if nothing
+    # was seen) so the trigger can react to belief-vs-reality disagreements.
+    just_observed = [facing_cell] if facing_cell is not None else []
 
     previous_probabilities = {}
     neighbor_true_labels   = {}
