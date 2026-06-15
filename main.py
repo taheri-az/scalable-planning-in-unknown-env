@@ -28,7 +28,6 @@ from label_detector import LabelDetector
 CELL_SIZE_M = 0.4  # must match TurtleBot.CELL_SIZE
 
 n, m = 20, 20
-h = 2
 p_h = 3
 initial_p_h = p_h
 policy_p_h = p_h
@@ -82,15 +81,12 @@ policy, all_values = Value_iteration(m, n, pruned_set, transition_dict, portion_
 print(f"Initial policy computed in {(time.time() - _t)*1000:.1f} ms")
 
 visited_states = [0]
-visited_states_un = [0]
+visited_states_un = [0]   # only cells the robot has entered OR camera-observed
 previous_probabilities = {}
 perceived_labels = {}        # cell_index -> last label the camera detected there
 full_traj = []
 full_physical_traj = []
 discovered_labels = []
-h_neighbors = get_states_within_h_distance(m, n, current_physical_state, h)
-for s in h_neighbors:
-    visited_states_un.append(s)
 current_value = all_values[current_state]
 p_t_t, p_t_c = 0, 0
 counter, j = 0, 0
@@ -169,7 +165,6 @@ while next_dfa_state != 'accept_all':
             )
 
     current_value_0 = all_values[current_state]
-    h_neighbors = get_states_within_h_distance(m, n, next_physical_state, h)
     plan_neighbors = get_states_within_h_distance(m, n, next_physical_state, p_h)
 
     adj_matrix = filter_adj_matrix(adj_org, plan_neighbors)
@@ -208,31 +203,37 @@ while next_dfa_state != 'accept_all':
         current_value_0 = all_values[current_state]
         print(f"  [replan #{counter}] policy computed in {p_t_i*1000:.1f} ms | value after: {current_value_0:8.2f}")
 
-    for state in h_neighbors:
-        if state not in visited_states_un:
-            visited_states_un.append(state)
+    # Mark as explored: the cell the robot has been in, the cell it just
+    # entered, and the cell it just perceived (if any). No Manhattan
+    # neighbourhood claim — the forward-facing camera can't see sideways.
+    for s in (current_physical_state, next_physical_state, assigned_cell):
+        if s is not None and s not in visited_states_un:
+            visited_states_un.append(s)
     visited_states.append(current_physical_state)
     full_physical_traj.append(current_physical_state)
 
-    # Full-perception mode: only the cells the camera has actually observed
-    # contribute to the trigger and belief update. Unobserved cells keep their
-    # prior so the planner stays curious about them.
-    observed_h_neighbors = [s for s in h_neighbors if s in perceived_labels]
+    # Trigger / belief update only on the cell freshly perceived this
+    # iteration. perceived_labels still accumulates across the whole run for
+    # the DFA transition, but the trigger reacts only to *new* observations.
+    just_observed = []
+    if assigned_cell is not None and detected_label is not None:
+        just_observed = [assigned_cell]
+
     previous_probabilities = {}
     neighbor_true_labels   = {}
-    for state in observed_h_neighbors:
+    for state in just_observed:
         previous_probabilities[state] = belief[state]
         neighbor_true_labels[state]   = perceived_labels[state]
 
     previous_probabilities = {k: v.tolist() for k, v in previous_probabilities.items()}
-    if observed_h_neighbors:
+    if just_observed:
         trigger_function_value = update_trigger(
-            observed_h_neighbors, neighbor_true_labels, previous_probabilities
+            just_observed, neighbor_true_labels, previous_probabilities
         )
     else:
         trigger_function_value = 0.0
 
-    for state in observed_h_neighbors:
+    for state in just_observed:
         neighbor_label = perceived_labels[state]
         belief = update(belief, state, neighbor_label)
         if neighbor_label != EMPTY_LABEL and state not in discovered_labels:
