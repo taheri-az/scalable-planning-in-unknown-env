@@ -93,6 +93,10 @@ class LabelDetector:
         self._frame_lock   = threading.Lock()
         self._shutdown     = False
 
+        # Continuous-tracking buffer: closest distance seen per colour since
+        # the last reset_observation_window() call. detect() reads from this.
+        self._min_dist_per_color = {}
+
         self._writer = None
         self._record_fps = record_fps
         if record_path is not None:
@@ -125,13 +129,23 @@ class LabelDetector:
                 continue
             with self._frame_lock:
                 self._latest_frame = frame
+
+            # Run detection on every frame so the continuous-tracking buffer
+            # captures markers as they flicker through the FOV.
+            label, dist_m, bbox, color = self._detect_in_frame(frame)
+            if color is not None and dist_m is not None:
+                with self._frame_lock:
+                    existing = self._min_dist_per_color.get(color, float("inf"))
+                    if dist_m < existing:
+                        self._min_dist_per_color[color] = dist_m
+
+            # Optional rate-limited video write with overlay
             if self._writer is None:
                 continue
             now = time.time()
             if now - last_write < write_interval:
                 continue
             annotated = frame.copy()
-            label, dist_m, bbox, color = self._detect_in_frame(annotated)
             self._annotate(annotated, label, dist_m, bbox, color)
             self._writer.write(annotated)
             last_write = now
@@ -196,19 +210,28 @@ class LabelDetector:
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         return mask
 
+    def reset_observation_window(self):
+        """Clear the continuous-tracking buffer. Call this when you want
+        detect() to only consider observations *after* this point."""
+        with self._frame_lock:
+            self._min_dist_per_color = {}
+
     def detect(self):
         """
-        Look at the most recent frame, find the strongest colour marker, and
-        return (label_str_or_None, distance_m, color_name). The label is None
-        if the detected colour isn't mapped to a DFA proposition. Returns
-        (None, None, None) if nothing meets the minimum area.
+        Return the *closest* observation per colour since the last call to
+        reset_observation_window(). Tuple: (label_str_or_None, distance_m,
+        color_name). Returns (None, None, None) if no marker was ever
+        detected within the current window.
         """
         with self._frame_lock:
-            if self._latest_frame is None:
+            if not self._min_dist_per_color:
                 return None, None, None
-            frame = self._latest_frame.copy()
-        label, dist_m, _bbox, color = self._detect_in_frame(frame)
-        return label, dist_m, color
+            best_color = min(
+                self._min_dist_per_color, key=self._min_dist_per_color.get
+            )
+            best_dist = self._min_dist_per_color[best_color]
+        label = COLOR_LABEL.get(best_color)
+        return label, best_dist, best_color
 
     def close(self):
         self._shutdown = True

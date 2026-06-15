@@ -141,6 +141,12 @@ while next_dfa_state != 'accept_all':
     # matches the action direction (and the marker isn't seen mid-turn).
     bot.wait_for_heading_settled()
 
+    # Continuous-tracking window: reset the per-colour closest-distance
+    # buffer *after* the rotation finishes, then let the grab thread
+    # accumulate detections for a short period while the robot drives the
+    # rest of the way into the cell. detect() returns the closest reading.
+    detector.reset_observation_window()
+    time.sleep(0.6)
     detected_label, detected_dist, detected_color = detector.detect()
     # New semantics: the camera always commits an observation about the cell
     # the robot just entered. If a mapped marker is detected within
