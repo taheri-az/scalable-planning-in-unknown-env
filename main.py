@@ -26,7 +26,9 @@ from turtle_driver import TurtleBot
 from label_detector import LabelDetector
 
 CELL_SIZE_M   = 0.3   # must match TurtleBot.CELL_SIZE
-ASSIGN_DIST_M = 0.40  # marker is attributed to facing_cell when within this
+ASSIGN_DIST_M = 0.50  # marker is attributed to facing_cell when within this
+                      # (detection fires at the cell boundary, so a marker
+                      # in facing_cell reads ≈ 1.3 * CELL_SIZE_M from the camera)
 
 n, m = 4, 4
 p_h = 3
