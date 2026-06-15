@@ -147,7 +147,14 @@ while next_dfa_state != 'accept_all':
     # rest of the way into the cell. detect() returns the closest reading.
     detector.reset_observation_window()
     time.sleep(1.5)
-    detected_label, detected_dist, detected_color = detector.detect()
+    detected_label, detected_dist, detected_color, snapshot = detector.detect()
+
+    # Diagnostic: dump every colour seen in the window with its closest distance.
+    if snapshot:
+        seen = ", ".join(
+            f"{c}={d*100:.1f}cm" for c, d in sorted(snapshot.items(), key=lambda kv: kv[1])
+        )
+        print(f"  [DETECT] window saw -> {seen}")
     # New semantics: the camera always commits an observation about the cell
     # the robot just entered. If a mapped marker is detected within
     # ASSIGN_DIST_M, that label is recorded; otherwise (nothing seen, or

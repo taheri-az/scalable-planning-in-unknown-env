@@ -56,10 +56,15 @@ class LabelDetector:
             raw = json.load(f)
         if "lower" in raw and "upper" in raw:
             raw = {"red": {"lower": raw["lower"], "upper": raw["upper"]}}
+        # Only keep colours mapped to a DFA proposition. Unmapped colours
+        # (blue / orange in the current config) are ignored entirely so
+        # spurious blobs in those hue ranges never compete with the real
+        # markers.
         self._color_bounds = {
             color: (np.array(entry["lower"], dtype=np.int32),
                     np.array(entry["upper"], dtype=np.int32))
             for color, entry in raw.items()
+            if COLOR_LABEL.get(color) is not None
         }
 
         self.min_area_px = min_area_px
@@ -229,19 +234,22 @@ class LabelDetector:
     def detect(self):
         """
         Return the *closest* observation per colour since the last call to
-        reset_observation_window(). Tuple: (label_str_or_None, distance_m,
-        color_name). Returns (None, None, None) if no marker was ever
-        detected within the current window.
+        reset_observation_window().
+
+        Returns (label_str_or_None, distance_m, color_name, snapshot_dict),
+        where snapshot_dict is {color: closest_distance_m} across all colours
+        seen in the window. The first three values describe the winning
+        (closest) detection; snapshot is the full picture for diagnostics.
+        Returns (None, None, None, {}) if no marker was detected in the window.
         """
         with self._frame_lock:
-            if not self._min_dist_per_color:
-                return None, None, None
-            best_color = min(
-                self._min_dist_per_color, key=self._min_dist_per_color.get
-            )
-            best_dist = self._min_dist_per_color[best_color]
+            snapshot = dict(self._min_dist_per_color)
+        if not snapshot:
+            return None, None, None, {}
+        best_color = min(snapshot, key=snapshot.get)
+        best_dist  = snapshot[best_color]
         label = COLOR_LABEL.get(best_color)
-        return label, best_dist, best_color
+        return label, best_dist, best_color, snapshot
 
     def close(self):
         self._shutdown = True
