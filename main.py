@@ -195,6 +195,16 @@ while next_dfa_state != 'accept_all':
         # Trigger / belief update should skip this cell — already committed.
         this_iter_observation = None
 
+    # ─── Diagnostic: observed-state map ──────────────────────────────────
+    non_empty_obs = {s: l for s, l in perceived_labels.items() if l != EMPTY_LABEL}
+    empty_obs    = sorted(s for s, l in perceived_labels.items() if l == EMPTY_LABEL)
+    print(f"  [OBS] non-empty: {non_empty_obs}")
+    print(f"  [OBS] empty cells ({len(empty_obs)}): {empty_obs}")
+    print(f"  [OBS] visited_un ({len(visited_states_un)}/{n*m}): {sorted(visited_states_un)}")
+    if action == 'stay':
+        print(f"  [WARN] action=stay at cell {current_physical_state}  "
+              f"(dfa={current_dfa_state}, p_h={p_h})")
+
     current_value_0 = all_values[current_state]
     plan_neighbors = get_states_within_h_distance(m, n, next_physical_state, p_h)
 
@@ -205,7 +215,7 @@ while next_dfa_state != 'accept_all':
     while current_value_0 < -1 / (1 - gamma)+ 100*epsilon:
         p_h += 1
         counter += 1
-        print(f"  [replan #{counter}] p_h={p_h} | value before: {current_value_0:8.2f}")
+        print(f"  [REPLAN-EXPAND #{counter}] value {current_value_0:.2f} < LOW; p_h grows -> {p_h}")
         plan_neighbors = get_states_within_h_distance(m, n, next_physical_state, p_h)
 
         paths, new_states_to_add = find_paths_in_visited(n, m, next_physical_state, discovered_labels)
@@ -232,7 +242,7 @@ while next_dfa_state != 'accept_all':
         p_t_t += p_t_i
         p_t_c += 1
         current_value_0 = all_values[current_state]
-        print(f"  [replan #{counter}] policy computed in {p_t_i*1000:.1f} ms | value after: {current_value_0:8.2f}")
+        print(f"  [REPLAN-EXPAND #{counter}] computed in {p_t_i*1000:.1f} ms | value after: {current_value_0:8.2f}")
 
     # Mark as explored: the cells the robot has been in and the cell it just
     # entered. No claims about cells beyond — the camera only labels the
@@ -288,10 +298,19 @@ while next_dfa_state != 'accept_all':
     observation_probabilities = belief
 
     j += 1
-    if trigger_function_value > threshold or next_value == current_value or j >= policy_p_h - 1:
+    # Tag each outer-replan reason so we can see why it fired.
+    replan_reasons = []
+    if trigger_function_value > threshold:
+        replan_reasons.append(f"trigger={trigger_function_value:.3f}>thr={threshold}")
+    if next_value == current_value:
+        replan_reasons.append(f"value_stuck={next_value:.2f}")
+    if j >= policy_p_h - 1:
+        replan_reasons.append(f"j={j}>=policy_p_h-1={policy_p_h-1}")
+    if replan_reasons:
         j = 0
         counter += 1
-        print(f"  [replan #{counter}] p_h={p_h} | value: {next_value:8.2f}")
+        print(f"  [REPLAN-TRIGGER #{counter}] reason(s): {', '.join(replan_reasons)} | "
+              f"p_h={p_h} | value={next_value:8.2f}")
 
         paths, new_states_to_add = find_paths_in_visited(n, m, next_physical_state, discovered_labels)
         for state in new_states_to_add:
@@ -316,7 +335,7 @@ while next_dfa_state != 'accept_all':
         p_t_i = end_time_3 - start_time_3
         p_t_t += p_t_i
         p_t_c += 1
-        print(f"  [replan #{counter}] policy computed in {p_t_i*1000:.1f} ms")
+        print(f"  [REPLAN-TRIGGER #{counter}] computed in {p_t_i*1000:.1f} ms")
 
         if current_physical_state not in visited_states_un:
             visited_states_un.append(current_physical_state)
