@@ -103,24 +103,37 @@ class TurtleBot:
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer)
         self._amcl_available = False  # flips True once we get a valid lookup
 
-        # Block until we have *some* pose source (AMCL preferred, odom OK).
-        deadline = time.time() + 5.0
-        while not self._have_pose and not rospy.is_shutdown():
+        # Try AMCL first (give the tf2 buffer time to fill — AMCL publishes
+        # at scan rate, ~10 Hz). Only fall back to /odom if AMCL still hasn't
+        # produced a transform after AMCL_INIT_TIMEOUT_S.
+        AMCL_INIT_TIMEOUT_S = 3.0
+        ODOM_FALLBACK_TIMEOUT_S = 2.0
+
+        amcl_deadline = time.time() + AMCL_INIT_TIMEOUT_S
+        while time.time() < amcl_deadline and not rospy.is_shutdown():
             if self._use_amcl and self._read_amcl_pose():
                 self._amcl_available = True
                 self._have_pose = True
                 rospy.loginfo("TurtleBot: using AMCL pose (map -> %s).",
                               self.POSE_FRAME_BASE)
                 break
-            if self._have_pose:  # odom callback fired
+            self.rate.sleep()
+
+        if not self._amcl_available:
+            # AMCL didn't come up — wait briefly for the /odom callback to
+            # have set _have_pose, then continue in drift-prone fallback mode.
+            odom_deadline = time.time() + ODOM_FALLBACK_TIMEOUT_S
+            while (not self._have_pose
+                   and time.time() < odom_deadline
+                   and not rospy.is_shutdown()):
+                self.rate.sleep()
+            if self._have_pose:
                 rospy.loginfo("TurtleBot: AMCL pose not available; "
                               "falling back to /odom (drift-prone).")
-                break
-            if time.time() > deadline:
+            else:
                 raise RuntimeError(
                     "No pose source available (neither AMCL tf nor /odom)."
                 )
-            self.rate.sleep()
 
         # Continuous AMCL pose refresh in a background thread so motion
         # loops always read the latest map-frame pose.
