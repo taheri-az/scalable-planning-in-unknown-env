@@ -86,6 +86,9 @@ class TurtleBot:
     def __init__(self, node_name='turtle_mover', start_facing='right',
                  use_amcl=True):
         rospy.init_node(node_name, anonymous=True)
+        # _shutdown must exist before any background thread starts referencing
+        # it (the AMCL refresh thread spins up partway through __init__).
+        self._shutdown = False
         self.pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         # /odom subscriber is kept as a fallback: when AMCL isn't running,
         # _have_pose still becomes True via this callback so the driver
@@ -156,7 +159,7 @@ class TurtleBot:
         self._idle.set()
         self._current_yaw_target = None       # heading the robot last drove toward
         self._cell_start_xy = None            # (x, y) at the start of the current cell traversal
-        self._shutdown = False
+        # _shutdown was already initialised at the top of __init__.
 
         self._motion_thread = threading.Thread(target=self._motion_loop, daemon=True)
         self._motion_thread.start()
