@@ -25,8 +25,35 @@ from visualization import generate_grid_environment
 from turtle_driver import TurtleBot
 from label_detector import LabelDetector
 
-CELL_SIZE_M   = 0.3   # must match TurtleBot.CELL_SIZE
-ASSIGN_DIST_M = 0.35  # marker attributed to the cell just entered when within this
+CELL_SIZE_M     = 0.3    # must match TurtleBot.CELL_SIZE
+ASSIGN_DIST_M   = 0.35   # within this → hard-assign label to next_physical_state
+SOFT_MAX_CELLS  = 3      # far observations are soft-attributed to at most this many cells ahead
+SOFT_P_LABEL    = 0.5    # P(observed_label) for soft updates
+SOFT_P_EMPTY    = 0.5    # P(empty) for soft updates (rest get zeta)
+SOFT_ZETA       = 0.02   # zeta floor for other labels in soft update
+
+
+def soft_update_belief(belief, state, label,
+                       p_label=SOFT_P_LABEL,
+                       p_empty=SOFT_P_EMPTY,
+                       zeta=SOFT_ZETA):
+    """Soft observation update for the cell at `state`:
+      P(label)  = p_label    (the colour we tentatively saw far away)
+      P(empty)  = p_empty    ("maybe nothing is actually there")
+      P(other)  = zeta       (everything else stays at the floor)
+    Then renormalise so the row sums to 1. Doesn't touch perceived_labels;
+    only nudges the planner's belief so the inferred cell gets explored."""
+    raw = []
+    for _prob, lbl in belief[state]:
+        if lbl == label:
+            raw.append((p_label, lbl))
+        elif lbl == EMPTY_LABEL:
+            raw.append((p_empty, lbl))
+        else:
+            raw.append((zeta, lbl))
+    total = sum(p for p, _ in raw)
+    belief[state] = [(p / total, lbl) for p, lbl in raw]
+    return belief
 
 n, m = 4, 4
 p_h = 2
@@ -156,17 +183,37 @@ while next_dfa_state != 'accept_all':
             f"{c}={d*100:.1f}cm" for c, d in sorted(snapshot.items(), key=lambda kv: kv[1])
         )
         print(f"  [DETECT] window saw -> {seen}")
-    # New semantics: the camera always commits an observation about the cell
-    # the robot just entered. If a mapped marker is detected within
-    # ASSIGN_DIST_M, that label is recorded; otherwise (nothing seen, or
-    # something seen too far / unmapped to attribute) the cell is recorded
-    # as EMPTY.
+    # Semantics:
+    #   - Mapped marker within ASSIGN_DIST_M → hard-assign label to next_phys.
+    #   - Mapped marker farther than ASSIGN_DIST_M → SOFT update at the cell
+    #     ~round(dist/CELL_SIZE_M) cells ahead (capped at SOFT_MAX_CELLS).
+    #   - No detection at all → record next_phys as EMPTY.
+    #   - Unmapped colour or out-of-grid soft target → next_phys still EMPTY,
+    #     no soft hint.
+    soft_target_cell  = None
+    soft_target_label = None
     if (detected_color is not None
             and detected_label is not None
             and detected_dist < ASSIGN_DIST_M):
         this_iter_observation = detected_label
     else:
         this_iter_observation = EMPTY_LABEL
+        if detected_color is not None and detected_label is not None:
+            # Far observation of a mapped colour — compute soft target cell.
+            cell_offset = int(round(detected_dist / CELL_SIZE_M))
+            cell_offset = max(1, min(cell_offset, SOFT_MAX_CELLS))
+            target = next_physical_state
+            for _ in range(cell_offset - 1):
+                nxt = get_next_state(m, n, target, action, adj_org)
+                if nxt is None:
+                    target = None
+                    break
+                target = nxt
+            # Don't override a cell that's already been confidently labelled.
+            if (target is not None
+                    and perceived_labels.get(target) in (None, EMPTY_LABEL)):
+                soft_target_cell  = target
+                soft_target_label = detected_label
     assigned_cell = next_physical_state
 
     if detected_color is not None and this_iter_observation == detected_label:
@@ -176,9 +223,11 @@ while next_dfa_state != 'accept_all':
         )
     elif detected_color is not None:
         reason = "too far" if detected_label is not None else "unmapped"
+        soft_note = (f" + soft hint to cell {soft_target_cell}"
+                     if soft_target_cell is not None else "")
         print(
             f"  [LABEL] detected {detected_color} @ {detected_dist*100:5.1f} cm "
-            f"({reason}); cell {assigned_cell} recorded as empty"
+            f"({reason}); cell {assigned_cell} recorded as empty{soft_note}"
         )
     else:
         print(f"  [LABEL] nothing in view; cell {assigned_cell} recorded as empty")
@@ -198,6 +247,18 @@ while next_dfa_state != 'accept_all':
             )
         # Trigger / belief update should skip this cell — already committed.
         this_iter_observation = None
+
+    # ─── Soft hint: nudge belief at the inferred far-cell ───────────────
+    # Doesn't touch perceived_labels (no DFA effect); just makes the cell
+    # attractive to the planner so it heads there to verify.
+    if soft_target_cell is not None and soft_target_label is not None:
+        belief = soft_update_belief(belief, soft_target_cell, soft_target_label)
+        observation_probabilities = belief
+        print(
+            f"  [SOFT] cell {soft_target_cell} <- "
+            f"P({soft_target_label})={SOFT_P_LABEL}, P(empty)={SOFT_P_EMPTY}, "
+            f"others={SOFT_ZETA}"
+        )
 
     # ─── Diagnostic: observed-state map ──────────────────────────────────
     non_empty_obs = {s: l for s, l in perceived_labels.items() if l != EMPTY_LABEL}
