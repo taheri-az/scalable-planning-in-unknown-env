@@ -4,6 +4,7 @@ import threading
 import time
 
 import rospy
+import tf2_ros
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from tf.transformations import euler_from_quaternion
@@ -76,18 +77,58 @@ class TurtleBot:
     DIST_TOLERANCE  = 0.005   # 5 mm
     MOTION_TIMEOUT  = 12.0    # seconds per cell — safety cap (slower speed needs more headroom)
 
-    def __init__(self, node_name='turtle_mover', start_facing='right'):
+    # Frames used for the AMCL-corrected pose. If the transform isn't
+    # available within POSE_LOOKUP_TIMEOUT_S, we fall back to /odom.
+    POSE_FRAME_MAP   = "map"
+    POSE_FRAME_BASE  = "base_footprint"
+    POSE_LOOKUP_TIMEOUT_S = 0.2
+
+    def __init__(self, node_name='turtle_mover', start_facing='right',
+                 use_amcl=True):
         rospy.init_node(node_name, anonymous=True)
         self.pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
+        # /odom subscriber is kept as a fallback: when AMCL isn't running,
+        # _have_pose still becomes True via this callback so the driver
+        # works in pure dead-reckoning mode too.
         self.sub = rospy.Subscriber('/odom', Odometry, self._odom_cb)
         self.x = 0.0
         self.y = 0.0
         self.yaw = 0.0
-        self._have_odom = False
+        self._have_pose = False
         self.rate = rospy.Rate(20)
 
-        while not self._have_odom and not rospy.is_shutdown():
+        # tf2 listener for map -> base_footprint (AMCL pose).
+        self._use_amcl  = use_amcl
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer)
+        self._amcl_available = False  # flips True once we get a valid lookup
+
+        # Block until we have *some* pose source (AMCL preferred, odom OK).
+        deadline = time.time() + 5.0
+        while not self._have_pose and not rospy.is_shutdown():
+            if self._use_amcl and self._read_amcl_pose():
+                self._amcl_available = True
+                self._have_pose = True
+                rospy.loginfo("TurtleBot: using AMCL pose (map -> %s).",
+                              self.POSE_FRAME_BASE)
+                break
+            if self._have_pose:  # odom callback fired
+                rospy.loginfo("TurtleBot: AMCL pose not available; "
+                              "falling back to /odom (drift-prone).")
+                break
+            if time.time() > deadline:
+                raise RuntimeError(
+                    "No pose source available (neither AMCL tf nor /odom)."
+                )
             self.rate.sleep()
+
+        # Continuous AMCL pose refresh in a background thread so motion
+        # loops always read the latest map-frame pose.
+        if self._amcl_available:
+            self._pose_refresh_thread = threading.Thread(
+                target=self._amcl_refresh_loop, daemon=True
+            )
+            self._pose_refresh_thread.start()
 
         if start_facing not in self.HEADINGS:
             raise ValueError(f"start_facing must be one of {list(self.HEADINGS)}")
@@ -108,11 +149,45 @@ class TurtleBot:
         self._motion_thread.start()
 
     def _odom_cb(self, msg):
+        # When AMCL pose is available, the refresh thread overwrites x/y/yaw
+        # at higher priority; the odom callback only fills them in if we're
+        # in fallback mode (no AMCL).
+        if self._amcl_available:
+            return
         p = msg.pose.pose.position
         self.x, self.y = p.x, p.y
         q = msg.pose.pose.orientation
         _, _, self.yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
-        self._have_odom = True
+        self._have_pose = True
+
+    def _read_amcl_pose(self):
+        """Lookup map -> base_footprint and write to self.x/y/yaw.
+        Returns True on success, False if the transform isn't ready."""
+        try:
+            t = self._tf_buffer.lookup_transform(
+                self.POSE_FRAME_MAP,
+                self.POSE_FRAME_BASE,
+                rospy.Time(0),
+                rospy.Duration(self.POSE_LOOKUP_TIMEOUT_S),
+            )
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException, tf2_ros.TransformException):
+            return False
+        self.x = t.transform.translation.x
+        self.y = t.transform.translation.y
+        q = t.transform.rotation
+        _, _, self.yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
+        return True
+
+    def _amcl_refresh_loop(self):
+        """Continuously refresh self.x/y/yaw from the AMCL transform."""
+        rate = rospy.Rate(30)
+        while not rospy.is_shutdown() and not self._shutdown:
+            if not self._read_amcl_pose():
+                # Transient lookup failure — sleep and retry, don't crash.
+                rate.sleep()
+                continue
+            rate.sleep()
 
     def _stop(self):
         self.pub.publish(Twist())
