@@ -240,36 +240,19 @@ class LabelDetector:
 
     def detect(self):
         """
-        Return the strongest observation since the last
+        Return the closest observation per colour since the last
         reset_observation_window() call.
 
         Returns (label_str_or_None, distance_m, color_name, snapshot_dict).
-        snapshot_dict is {color: closest_distance_m} across colours seen.
-
-        Selection rule:
-          - If any colour had a CLIPPED bbox during the window, that colour
-            wins regardless of distance — the reported distance is overridden
-            to a very small value (0.05 m) so main's hard-assign threshold
-            fires. Clipping means the marker is right under/in-front of the
-            camera, i.e. inside the cell the robot just entered.
-          - Otherwise, the colour with the closest pinhole distance wins.
-
-        Returns (None, None, None, {}) if no marker was detected.
+        snapshot_dict is {color: closest_distance_m} across colours seen
+        in the window. Returns (None, None, None, {}) if nothing detected.
         """
         with self._frame_lock:
             snapshot = dict(self._min_dist_per_color)
-            clipped  = dict(self._clipped_per_color)
         if not snapshot:
             return None, None, None, {}
-        # Prefer any clipped colour (strong "in current cell" signal).
-        clipped_colors = [c for c in snapshot if clipped.get(c)]
-        if clipped_colors:
-            # Tie-break clipped colours by their (real, unclipped) min distance.
-            best_color = min(clipped_colors, key=snapshot.get)
-            best_dist  = 0.05   # force hard-assign at the receiving end
-        else:
-            best_color = min(snapshot, key=snapshot.get)
-            best_dist  = snapshot[best_color]
+        best_color = min(snapshot, key=snapshot.get)
+        best_dist  = snapshot[best_color]
         label = COLOR_LABEL.get(best_color)
         return label, best_dist, best_color, snapshot
 
