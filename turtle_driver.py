@@ -288,6 +288,12 @@ class TurtleBot:
                     y0 += sin_h * self.CELL_SIZE
                     self._cell_start_xy = (x0, y0)
                     self._cell_entered.clear()
+                    # Chained same-direction action bypasses _execute_action,
+                    # so we must signal rotation-done here (there's no
+                    # rotation when chaining a same-direction move) —
+                    # otherwise main's wait_for_rotation_done() blocks
+                    # forever.
+                    self._rotation_done.set()
                     signaled = False
                     deadline = time.time() + self.MOTION_TIMEOUT
                     continue
