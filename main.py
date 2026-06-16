@@ -163,18 +163,15 @@ while next_dfa_state != 'accept_all':
         f"| value={current_value:8.2f}"
     )
 
-    bot.move(action)
-    # Wait for the action's rotation phase to fully finish. The motion
-    # thread sets _rotation_done explicitly after _blend_rotate completes
-    # (or immediately for same-direction moves), so this blocks reliably
-    # with no race against the motion thread's startup timing.
-    bot.wait_for_rotation_done()
-    # Now that the camera is pointed in the action direction, start the
-    # observation window. It covers the entire forward-approach phase —
-    # the marker in the cell ahead is closest to the camera right here.
+    # Reset the detection window BEFORE the move so the grab thread can
+    # accumulate detections during the *entire* transition (including any
+    # chained-from-previous drive). Otherwise close-range frames seen
+    # mid-motion get wiped before main reads them — the video shows them
+    # but `detect()` returns a stale, larger distance.
     detector.reset_observation_window()
+    bot.move(action)
     bot.wait_for_cell_entry()
-    time.sleep(0.5)   # small tail for any final close-up frames
+    time.sleep(1.0)   # tail to catch any final close-up frames
     detected_label, detected_dist, detected_color, snapshot = detector.detect()
 
     # Diagnostic: dump every colour seen in the window with its closest distance.
