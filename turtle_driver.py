@@ -62,9 +62,10 @@ class TurtleBot:
     LINEAR_SPEED    = 0.035   # 30% slower than 0.05
     ANGULAR_SPEED   = 1.05    # 30% slower than 1.5
 
-    # Linear velocity held during a heading change. Nonzero so the robot
-    # arcs through corners instead of pivoting in place.
-    TURN_LINEAR_SPEED = 0.04
+    # Linear velocity held during a heading change. Set to 0 so the robot
+    # pivots in place — this avoids accumulating unaccounted-for forward
+    # motion over multiple turns, which causes the robot to drift off-grid.
+    TURN_LINEAR_SPEED = 0.0
 
     # Physical cell size — robot traverses CELL_SIZE meters between cell centers.
     CELL_SIZE       = 0.3

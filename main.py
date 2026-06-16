@@ -135,15 +135,15 @@ while next_dfa_state != 'accept_all':
         f"| value={current_value:8.2f}"
     )
 
-    # Start the observation window BEFORE the move so the grab thread can
-    # accumulate detections during the entire drive. Otherwise close-range
-    # frames from the first half of the move would be wiped before we read
-    # them. detect() returns the closest reading over this whole window.
-    detector.reset_observation_window()
     bot.move(action)
     bot.wait_for_cell_entry()
     bot.wait_for_heading_settled()
-    time.sleep(0.3)  # small tail to catch any final close-up frames
+    # Reset the observation window AFTER rotation completes, so detections
+    # from cells momentarily swept through during a turn don't get
+    # misattributed to next_physical_state. Then accumulate for ~2s to catch
+    # markers in the second half of the cell's forward motion.
+    detector.reset_observation_window()
+    time.sleep(2.0)
     detected_label, detected_dist, detected_color, snapshot = detector.detect()
 
     # Diagnostic: dump every colour seen in the window with its closest distance.
