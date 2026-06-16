@@ -87,9 +87,11 @@ class TurtleBot:
     def __init__(self, node_name='turtle_mover', start_facing='right',
                  use_amcl=True):
         rospy.init_node(node_name, anonymous=True)
-        # _shutdown must exist before any background thread starts referencing
-        # it (the AMCL refresh thread spins up partway through __init__).
+        # These must all exist BEFORE any callback or background thread is
+        # registered, otherwise the first /odom callback or AMCL refresh
+        # thread can hit AttributeError.
         self._shutdown = False
+        self._amcl_available = False
         self.pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         # /odom subscriber is kept as a fallback: when AMCL isn't running,
         # _have_pose still becomes True via this callback so the driver
@@ -105,7 +107,7 @@ class TurtleBot:
         self._use_amcl  = use_amcl
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer)
-        self._amcl_available = False  # flips True once we get a valid lookup
+        # _amcl_available was already initialised at the top of __init__.
 
         # Try AMCL first (give the tf2 buffer time to fill — AMCL publishes
         # at scan rate, ~10 Hz). Only fall back to /odom if AMCL still hasn't
@@ -158,6 +160,11 @@ class TurtleBot:
         self._cell_entered = threading.Event()  # set when robot crosses next-cell boundary
         self._idle = threading.Event()
         self._idle.set()
+        # Signals "the rotation (if any) for the queued action is finished
+        # and forward motion has either started or isn't needed". Cleared
+        # eagerly in move(); set by _execute_action just before forward drive.
+        self._rotation_done = threading.Event()
+        self._rotation_done.set()
         self._current_yaw_target = None       # heading the robot last drove toward
         self._cell_start_xy = None            # (x, y) at the start of the current cell traversal
         # _shutdown was already initialised at the top of __init__.
@@ -300,10 +307,12 @@ class TurtleBot:
     def _execute_action(self, action):
         if action == 'stay':
             self._cell_entered.set()
+            self._rotation_done.set()
             return
         if action not in self.HEADINGS:
             rospy.logwarn("Unknown action: %s", action)
             self._cell_entered.set()
+            self._rotation_done.set()
             return
 
         target_yaw = self._action_target_yaw(action)
@@ -330,6 +339,11 @@ class TurtleBot:
                 y0 = self._cell_start_xy[1] + sin_h * self.CELL_SIZE
             else:
                 x0, y0 = self.x, self.y
+
+        # Rotation finished (or wasn't needed) — signal that to anyone waiting
+        # via wait_for_rotation_done() so they can safely reset detection
+        # windows knowing the camera now points in the action direction.
+        self._rotation_done.set()
 
         self._drive_continuous(x0, y0, target_yaw)
 
@@ -368,8 +382,16 @@ class TurtleBot:
                 )
             self._next_action = action
         self._cell_entered.clear()
+        # Eagerly clear rotation_done so wait_for_rotation_done() reliably
+        # blocks until the motion thread sets it (after any rotation finishes).
+        self._rotation_done.clear()
         self._idle.clear()
         self._next_action_event.set()
+
+    def wait_for_rotation_done(self, timeout=10.0):
+        """Block until the in-flight action's rotation phase (if any) has
+        completed. Returns immediately for same-direction moves."""
+        self._rotation_done.wait(timeout=timeout)
 
     def wait_for_cell_entry(self):
         """Block until the robot has crossed into the next cell (halfway through CELL_SIZE)."""
@@ -401,6 +423,7 @@ class TurtleBot:
         # Wake every blocked waiter so threads exit promptly.
         self._next_action_event.set()
         self._cell_entered.set()
+        self._rotation_done.set()
         self._idle.set()
         self._stop()
 

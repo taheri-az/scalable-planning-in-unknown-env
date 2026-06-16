@@ -137,13 +137,14 @@ while next_dfa_state != 'accept_all':
     )
 
     bot.move(action)
-    # Give the motion thread time to set _current_yaw_target before we wait
-    # on it; otherwise wait_for_heading_settled returns immediately.
-    time.sleep(0.2)
-    bot.wait_for_heading_settled()
-    # Reset BETWEEN rotation-done and halfway-crossing so the observation
-    # window covers the *approach* phase of forward motion — that's when the
-    # marker in the cell ahead is closest to the camera.
+    # Wait for the action's rotation phase to fully finish. The motion
+    # thread sets _rotation_done explicitly after _blend_rotate completes
+    # (or immediately for same-direction moves), so this blocks reliably
+    # with no race against the motion thread's startup timing.
+    bot.wait_for_rotation_done()
+    # Now that the camera is pointed in the action direction, start the
+    # observation window. It covers the entire forward-approach phase —
+    # the marker in the cell ahead is closest to the camera right here.
     detector.reset_observation_window()
     bot.wait_for_cell_entry()
     time.sleep(0.5)   # small tail for any final close-up frames
