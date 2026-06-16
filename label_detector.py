@@ -98,9 +98,14 @@ class LabelDetector:
         self._frame_lock   = threading.Lock()
         self._shutdown     = False
 
-        # Continuous-tracking buffer: closest distance seen per colour since
-        # the last reset_observation_window() call. detect() reads from this.
+        # Continuous-tracking buffers, reset by reset_observation_window():
+        # _min_dist_per_color : closest pinhole distance seen per colour.
+        # _clipped_per_color  : True if a bbox for this colour touched the
+        #   frame edge during the window. A clipped bbox means the marker is
+        #   spilling out of the FOV — strong signal the robot is essentially
+        #   on top of it.
         self._min_dist_per_color = {}
+        self._clipped_per_color  = {}
 
         self._writer = None
         self._record_fps = record_fps
@@ -137,12 +142,14 @@ class LabelDetector:
 
             # Run detection on every frame so the continuous-tracking buffer
             # captures markers as they flicker through the FOV.
-            label, dist_m, bbox, color = self._detect_in_frame(frame)
+            label, dist_m, bbox, color, is_clipped = self._detect_in_frame(frame)
             if color is not None and dist_m is not None:
                 with self._frame_lock:
                     existing = self._min_dist_per_color.get(color, float("inf"))
                     if dist_m < existing:
                         self._min_dist_per_color[color] = dist_m
+                    if is_clipped:
+                        self._clipped_per_color[color] = True
 
             # Optional rate-limited video write with overlay
             if self._writer is None:
@@ -158,14 +165,17 @@ class LabelDetector:
     def _detect_in_frame(self, frame):
         """
         Scan every configured colour, pick the largest valid blob across all,
-        and return (label_str_or_None, distance_m, (x, y, w, h), color_name).
-        Returns (None, None, None, None) if nothing meets `min_area_px`.
+        and return (label_str_or_None, distance_m, (x, y, w, h), color_name,
+        is_clipped).  Returns (None, None, None, None, False) if nothing
+        meets `min_area_px`.
 
-        label_str is None when the detected colour isn't mapped to a DFA
-        proposition (e.g. yellow / orange) — useful for verifying perception
-        without affecting the planner.
+        is_clipped is True when the marker's axis-aligned bbox touches a
+        frame edge — i.e. the marker is spilling out of the FOV. This is a
+        strong "robot is right on top of the marker" signal at close range.
         """
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        H, W = frame.shape[:2]
+        EDGE_MARGIN = 2
         best_area = 0
         best = None
         for color, (lo, hi) in self._color_bounds.items():
@@ -183,17 +193,17 @@ class LabelDetector:
             best_area = area
             best = (color, x, y, w, h)
         if best is None:
-            return None, None, None, None
+            return None, None, None, None, False
         color, x, y, w, h = best
-        # Note: when the marker is clipped at the frame edge (typical at very
-        # close range), `w` underestimates the true projected width — the
-        # pinhole formula then returns an artificially small distance. We
-        # accept that: a clipped detection is itself a strong signal that we
-        # are essentially on top of the marker, and the small reported
-        # distance correctly falls under the assignment threshold.
+        is_clipped = (
+            x <= EDGE_MARGIN
+            or y <= EDGE_MARGIN
+            or x + w >= W - EDGE_MARGIN
+            or y + h >= H - EDGE_MARGIN
+        )
         distance_cm = (self.real_width_cm * self.focal_px) / w
         distance_m  = distance_cm / 100.0
-        return COLOR_LABEL.get(color), distance_m, (x, y, w, h), color
+        return COLOR_LABEL.get(color), distance_m, (x, y, w, h), color, is_clipped
 
     @staticmethod
     def _annotate(frame, label, distance_m, bbox, color=None):
@@ -222,28 +232,44 @@ class LabelDetector:
         return mask
 
     def reset_observation_window(self):
-        """Clear the continuous-tracking buffer. Call this when you want
+        """Clear the continuous-tracking buffers. Call this when you want
         detect() to only consider observations *after* this point."""
         with self._frame_lock:
             self._min_dist_per_color = {}
+            self._clipped_per_color  = {}
 
     def detect(self):
         """
-        Return the *closest* observation per colour since the last call to
-        reset_observation_window().
+        Return the strongest observation since the last
+        reset_observation_window() call.
 
-        Returns (label_str_or_None, distance_m, color_name, snapshot_dict),
-        where snapshot_dict is {color: closest_distance_m} across all colours
-        seen in the window. The first three values describe the winning
-        (closest) detection; snapshot is the full picture for diagnostics.
-        Returns (None, None, None, {}) if no marker was detected in the window.
+        Returns (label_str_or_None, distance_m, color_name, snapshot_dict).
+        snapshot_dict is {color: closest_distance_m} across colours seen.
+
+        Selection rule:
+          - If any colour had a CLIPPED bbox during the window, that colour
+            wins regardless of distance — the reported distance is overridden
+            to a very small value (0.05 m) so main's hard-assign threshold
+            fires. Clipping means the marker is right under/in-front of the
+            camera, i.e. inside the cell the robot just entered.
+          - Otherwise, the colour with the closest pinhole distance wins.
+
+        Returns (None, None, None, {}) if no marker was detected.
         """
         with self._frame_lock:
             snapshot = dict(self._min_dist_per_color)
+            clipped  = dict(self._clipped_per_color)
         if not snapshot:
             return None, None, None, {}
-        best_color = min(snapshot, key=snapshot.get)
-        best_dist  = snapshot[best_color]
+        # Prefer any clipped colour (strong "in current cell" signal).
+        clipped_colors = [c for c in snapshot if clipped.get(c)]
+        if clipped_colors:
+            # Tie-break clipped colours by their (real, unclipped) min distance.
+            best_color = min(clipped_colors, key=snapshot.get)
+            best_dist  = 0.05   # force hard-assign at the receiving end
+        else:
+            best_color = min(snapshot, key=snapshot.get)
+            best_dist  = snapshot[best_color]
         label = COLOR_LABEL.get(best_color)
         return label, best_dist, best_color, snapshot
 
