@@ -137,14 +137,16 @@ while next_dfa_state != 'accept_all':
     )
 
     bot.move(action)
-    bot.wait_for_cell_entry()
+    # Give the motion thread time to set _current_yaw_target before we wait
+    # on it; otherwise wait_for_heading_settled returns immediately.
+    time.sleep(0.2)
     bot.wait_for_heading_settled()
-    # Reset the observation window AFTER rotation completes, so detections
-    # from cells momentarily swept through during a turn don't get
-    # misattributed to next_physical_state. Then accumulate for ~2s to catch
-    # markers in the second half of the cell's forward motion.
+    # Reset BETWEEN rotation-done and halfway-crossing so the observation
+    # window covers the *approach* phase of forward motion — that's when the
+    # marker in the cell ahead is closest to the camera.
     detector.reset_observation_window()
-    time.sleep(2.0)
+    bot.wait_for_cell_entry()
+    time.sleep(0.5)   # small tail for any final close-up frames
     detected_label, detected_dist, detected_color, snapshot = detector.detect()
 
     # Diagnostic: dump every colour seen in the window with its closest distance.

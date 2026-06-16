@@ -59,8 +59,8 @@ class TurtleBot:
     }
 
     # Hard motion limits (TB3 Burger: 0.22 m/s, ~2.84 rad/s)
-    LINEAR_SPEED    = 0.035   # 30% slower than 0.05
-    ANGULAR_SPEED   = 1.05    # 30% slower than 1.5
+    LINEAR_SPEED    = 0.035   # slow forward motion
+    ANGULAR_SPEED   = 0.7     # slower turns -> less wheel slip + camera shake
 
     # Linear velocity held during a heading change. Set to 0 so the robot
     # pivots in place — this avoids accumulating unaccounted-for forward
@@ -313,8 +313,11 @@ class TurtleBot:
         )
 
         if not same_direction:
-            self._blend_rotate(target_yaw)
+            # Set the new target BEFORE rotating so wait_for_heading_settled()
+            # called from the main thread actually blocks until the rotation
+            # finishes (it compares self.yaw against _current_yaw_target).
             self._current_yaw_target = target_yaw
+            self._blend_rotate(target_yaw)
             x0, y0 = self.x, self.y
         else:
             # Same direction — start the new cell from where the previous cell
