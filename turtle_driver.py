@@ -387,13 +387,11 @@ class TurtleBot:
                     self._next_action, action,
                 )
             self._next_action = action
-            # Clear signaling events INSIDE the lock. Otherwise the motion
-            # thread can chain the action and set _rotation_done before this
-            # function clears it — leaving main's wait_for_rotation_done()
-            # blocked on a cleared event that no one re-sets.
-            self._cell_entered.clear()
-            self._rotation_done.clear()
-            self._idle.clear()
+        self._cell_entered.clear()
+        # Eagerly clear rotation_done so wait_for_rotation_done() reliably
+        # blocks until the motion thread sets it (after any rotation finishes).
+        self._rotation_done.clear()
+        self._idle.clear()
         self._next_action_event.set()
 
     def wait_for_rotation_done(self, timeout=10.0):
