@@ -84,7 +84,8 @@ print(f"Initial policy computed in {(time.time() - _t)*1000:.1f} ms")
 visited_states = [0]
 visited_states_un = [0]   # only cells the robot has entered OR camera-observed
 previous_probabilities = {}
-perceived_labels = {}        # cell_index -> last label the camera detected there
+perceived_labels = {0: EMPTY_LABEL}   # robot starts at cell 0; assume it's empty
+                                       # (it's where we started — we'd have noticed a marker on us)
 full_traj = []
 full_physical_traj = []
 discovered_labels = []
