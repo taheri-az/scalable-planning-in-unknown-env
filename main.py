@@ -83,8 +83,8 @@ print(f"Product automaton construction time: {time.time() - time_ps:.3f}s")
 transitions = list(dict.fromkeys(transitions))
 
 initial_belief = {
-    2: {'a && !b && !c': 0.8, '!a && !b && !c': 0.2},   # cell 2 expects red    (a)
-    5: {'!a && b && !c': 0.8, '!a && !b && !c': 0.2},   # cell 5 expects yellow (b)
+    3: {'a && !b && !c': 0.8, '!a && !b && !c': 0.2},   # cell 3 expects red    (a)
+    4: {'!a && b && !c': 0.8, '!a && !b && !c': 0.2},   # cell 4 expects yellow (b)
     9: {'!a && !b && c': 0.8, '!a && !b && !c': 0.2},   # cell 9 expects green  (c)
 }
 belief = assign_probabilities_g3(n, m, atomic_props, initial_belief=initial_belief)
