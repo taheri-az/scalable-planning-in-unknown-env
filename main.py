@@ -25,8 +25,8 @@ from visualization import generate_grid_environment
 from turtle_driver import TurtleBot
 from label_detector import LabelDetector
 
-CELL_SIZE_M     = 0.3    # must match TurtleBot.CELL_SIZE
-ASSIGN_DIST_M   = 0.45   # within this → hard-assign label to next_physical_state
+CELL_SIZE_M     = 0.5    # must match TurtleBot.CELL_SIZE
+ASSIGN_DIST_M   = 0.65   # within this → hard-assign label to next_physical_state
 SOFT_MAX_CELLS  = 3      # far observations are soft-attributed to at most this many cells ahead
 SOFT_P_LABEL    = 0.5    # P(observed_label) for soft updates
 SOFT_P_EMPTY    = 0.5    # P(empty) for soft updates (rest get zeta)
@@ -55,8 +55,8 @@ def soft_update_belief(belief, state, label,
     belief[state] = [(p / total, lbl) for p, lbl in raw]
     return belief
 
-n, m = 4, 4
-p_h = 2
+n, m = 6, 3
+p_h = 4
 initial_p_h = p_h
 policy_p_h = p_h
 threshold = 0
@@ -83,9 +83,9 @@ print(f"Product automaton construction time: {time.time() - time_ps:.3f}s")
 transitions = list(dict.fromkeys(transitions))
 
 initial_belief = {
-    2:  {'a && !b && !c': 0.8, '!a && !b && !c': 0.2},   # cell 2  expects red    (a)
-    10: {'!a && b && !c': 0.8, '!a && !b && !c': 0.2},   # cell 10 expects yellow (b)
-    15: {'!a && !b && c': 0.8, '!a && !b && !c': 0.2},   # cell 15 expects green  (c)
+    2: {'a && !b && !c': 0.8, '!a && !b && !c': 0.2},   # cell 2 expects red    (a)
+    5: {'!a && b && !c': 0.8, '!a && !b && !c': 0.2},   # cell 5 expects yellow (b)
+    9: {'!a && !b && c': 0.8, '!a && !b && !c': 0.2},   # cell 9 expects green  (c)
 }
 belief = assign_probabilities_g3(n, m, atomic_props, initial_belief=initial_belief)
 observation_probabilities = belief
