@@ -163,13 +163,16 @@ while next_dfa_state != 'accept_all':
         f"| value={current_value:8.2f}"
     )
 
-    # Reset the detection window BEFORE the move so the grab thread can
-    # accumulate detections during the *entire* transition (including any
-    # chained-from-previous drive). Otherwise close-range frames seen
-    # mid-motion get wiped before main reads them — the video shows them
-    # but `detect()` returns a stale, larger distance.
-    detector.reset_observation_window()
+    # Queue the action; reset detection AFTER any rotation finishes so the
+    # window only covers frames where the camera points along the action
+    # direction. Otherwise markers swept through the FOV during a turn get
+    # logged with bogus distances and (wrongly) hard-assigned to the
+    # destination cell. wait_for_rotation_done() returns immediately for
+    # same-direction (chained) moves, so we still capture the full forward
+    # drive in those cases.
     bot.move(action)
+    bot.wait_for_rotation_done()
+    detector.reset_observation_window()
     bot.wait_for_cell_entry()
     time.sleep(1.0)   # tail to catch any final close-up frames
     detected_label, detected_dist, detected_color, snapshot = detector.detect()
