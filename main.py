@@ -121,7 +121,7 @@ p_t_t, p_t_c = 0, 0
 counter, j = 0, 0
 step_count = 0
 
-bot = TurtleBot()
+bot = TurtleBot(use_amcl=False)
 detector = LabelDetector(camera_index=0, record_path="run.mp4")
 
 def _shutdown_handler(signum, _frame):
