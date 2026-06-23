@@ -99,13 +99,13 @@ current_physical_state = 0
 
 from dfa import probabilistic_labeling_next
 
-plan_neighbors = get_states_within_h_distance(m, n, current_physical_state, p_h)
+plan_neighbors = get_states_within_h_distance(n, m, current_physical_state, p_h)
 adj_matrix = filter_adj_matrix(adj_org, plan_neighbors)
-pruned_set = prune_dict_by_states(PA_values(m, n, product_nodes, adj_matrix), plan_neighbors)
+pruned_set = prune_dict_by_states(PA_values(n, m, product_nodes, adj_matrix), plan_neighbors)
 portion_transitions = prune_transitions_by_states(transitions, plan_neighbors)
 transition_dict = probabilistic_labeling_next(portion_transitions, observation_probabilities, dfa_transitions, adj_matrix)
 _t = time.time()
-policy, all_values = Value_iteration(m, n, pruned_set, transition_dict, portion_transitions, product_nodes, gamma, adj_matrix, epsilon)
+policy, all_values = Value_iteration(n, m, pruned_set, transition_dict, portion_transitions, product_nodes, gamma, adj_matrix, epsilon)
 print(f"Initial policy computed in {(time.time() - _t)*1000:.1f} ms")
 
 visited_states = [0]
@@ -154,7 +154,7 @@ while next_dfa_state != 'accept_all':
     current_value = all_values[current_state]
 
     step_count += 1
-    next_physical_state = get_next_state(m, n, current_physical_state, action, adj_matrix)
+    next_physical_state = get_next_state(n, m, current_physical_state, action, adj_matrix)
     print(
         f"\n[Step {step_count:>3}] "
         f"state={current_physical_state:>3} -> {next_physical_state:<3} "
@@ -201,7 +201,7 @@ while next_dfa_state != 'accept_all':
             cell_offset = max(1, min(cell_offset, SOFT_MAX_CELLS))
             target = next_physical_state
             for _ in range(cell_offset - 1):
-                nxt = get_next_state(m, n, target, action, adj_org)
+                nxt = get_next_state(n, m, target, action, adj_org)
                 if nxt is None:
                     target = None
                     break
@@ -268,7 +268,7 @@ while next_dfa_state != 'accept_all':
               f"(dfa={current_dfa_state}, p_h={p_h})")
 
     current_value_0 = all_values[current_state]
-    plan_neighbors = get_states_within_h_distance(m, n, next_physical_state, p_h)
+    plan_neighbors = get_states_within_h_distance(n, m, next_physical_state, p_h)
 
     adj_matrix = filter_adj_matrix(adj_org, plan_neighbors)
 
@@ -278,7 +278,7 @@ while next_dfa_state != 'accept_all':
         p_h += 1
         counter += 1
         print(f"  [REPLAN-EXPAND #{counter}] value {current_value_0:.2f} < LOW; p_h grows -> {p_h}")
-        plan_neighbors = get_states_within_h_distance(m, n, next_physical_state, p_h)
+        plan_neighbors = get_states_within_h_distance(n, m, next_physical_state, p_h)
 
         paths, new_states_to_add = find_paths_in_visited(n, m, next_physical_state, discovered_labels)
         for state in new_states_to_add:
@@ -287,7 +287,7 @@ while next_dfa_state != 'accept_all':
 
         adj_matrix = filter_adj_matrix(adj_org, plan_neighbors)
 
-        initial_PA_values = PA_values(m, n, product_nodes, adj_matrix)
+        initial_PA_values = PA_values(n, m, product_nodes, adj_matrix)
         pruned_set = prune_dict_by_states(initial_PA_values, plan_neighbors)
         policy_p_h = p_h
 
@@ -297,7 +297,7 @@ while next_dfa_state != 'accept_all':
         )
         start_time_3 = time.time()
         policy, all_values = Value_iteration(
-            m, n, pruned_set, transition_dict, portion_transitions, product_nodes, gamma, adj_matrix, epsilon
+            n, m, pruned_set, transition_dict, portion_transitions, product_nodes, gamma, adj_matrix, epsilon
         )
         end_time_3 = time.time()
         p_t_i = end_time_3 - start_time_3
@@ -381,7 +381,7 @@ while next_dfa_state != 'accept_all':
 
         adj_matrix = filter_adj_matrix(adj_org, plan_neighbors)
 
-        initial_PA_values = PA_values(m, n, product_nodes, adj_matrix)
+        initial_PA_values = PA_values(n, m, product_nodes, adj_matrix)
         pruned_set = prune_dict_by_states(initial_PA_values, plan_neighbors)
         policy_p_h = p_h
 
@@ -391,7 +391,7 @@ while next_dfa_state != 'accept_all':
         )
         start_time_3 = time.time()
         policy, all_values = Value_iteration(
-            m, n, pruned_set, transition_dict, portion_transitions, product_nodes, gamma, adj_matrix, epsilon
+            n, m, pruned_set, transition_dict, portion_transitions, product_nodes, gamma, adj_matrix, epsilon
         )
         end_time_3 = time.time()
         p_t_i = end_time_3 - start_time_3
