@@ -76,7 +76,11 @@ class TurtleBot:
 
     ANGLE_TOLERANCE = 0.015   # ~0.86 deg
     DIST_TOLERANCE  = 0.005   # 5 mm
-    MOTION_TIMEOUT  = 12.0    # seconds per cell — safety cap (slower speed needs more headroom)
+    # Cell-traversal safety cap. Must exceed CELL_SIZE / LINEAR_SPEED + headroom
+    # for PID ramp-down, otherwise the loop exits before the cell completes and
+    # the physical distance per cell silently caps at LINEAR_SPEED * MOTION_TIMEOUT
+    # regardless of what CELL_SIZE is set to.
+    MOTION_TIMEOUT  = 40.0
 
     # Frames used for the AMCL-corrected pose. If the transform isn't
     # available within POSE_LOOKUP_TIMEOUT_S, we fall back to /odom.
