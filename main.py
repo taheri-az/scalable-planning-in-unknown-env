@@ -25,8 +25,8 @@ from visualization import generate_grid_environment
 from turtle_driver import TurtleBot
 from label_detector import LabelDetector
 
-CELL_SIZE_M     = 0.5    # must match TurtleBot.CELL_SIZE
-ASSIGN_DIST_M   = 0.65   # within this → hard-assign label to next_physical_state
+CELL_SIZE_M     = 0.6    # must match TurtleBot.CELL_SIZE
+ASSIGN_DIST_M   = 0.75   # within this → hard-assign label to next_physical_state
 SOFT_MAX_CELLS  = 3      # far observations are soft-attributed to at most this many cells ahead
 SOFT_P_LABEL    = 0.5    # P(observed_label) for soft updates
 SOFT_P_EMPTY    = 0.5    # P(empty) for soft updates (rest get zeta)
