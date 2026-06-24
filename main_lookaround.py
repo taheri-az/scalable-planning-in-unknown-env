@@ -52,10 +52,35 @@ SOFT_ZETA       = 0.02
 # Gives the grab thread time to land a few frames in the new heading.
 LOOKAROUND_DWELL_S = 1.0
 
-# Directions to look around, in the order the robot will face them.
-# Choosing an order that minimizes rotation given the robot's current
-# heading is possible but not implemented here.
-LOOKAROUND_DIRECTIONS = ['right', 'down', 'left', 'up']
+# The four cardinal directions. The order used at each step is chosen
+# dynamically based on the robot's current yaw — see
+# `lookaround_order_from_yaw` below.
+ALL_DIRECTIONS = ['right', 'down', 'left', 'up']
+
+
+def lookaround_order_from_yaw(current_yaw, candidates, bot):
+    """Sort `candidates` (a subset of ALL_DIRECTIONS) into an order that
+    minimizes cumulative rotation when visiting them in sequence, starting
+    from `current_yaw`.
+
+    Greedy: at each step pick the unvisited direction whose target yaw is
+    closest to the robot's current (simulated) yaw. Updates the simulated
+    yaw after each pick. For 4-cardinal directions this is optimal — the
+    greedy choice corresponds to walking around the compass in the cheaper
+    rotational direction without doubling back."""
+    remaining = list(candidates)
+    order = []
+    sim_yaw = current_yaw
+    while remaining:
+        # Pick the direction whose target yaw is closest to sim_yaw.
+        def yaw_cost(d):
+            target = bot._action_target_yaw(d)
+            return bot._yaw_diff(target, sim_yaw)
+        nxt = min(remaining, key=yaw_cost)
+        order.append(nxt)
+        sim_yaw = bot._action_target_yaw(nxt)
+        remaining.remove(nxt)
+    return order
 
 
 def soft_update_belief(belief, state, label,
@@ -257,17 +282,30 @@ while next_dfa_state != 'accept_all':
     # ─── Look around: face each unmapped one-hop neighbor and observe ──
     step_count += 1
     print(f"\n[Step {step_count:>3}] at cell {current_physical_state} | dfa={current_dfa_state}")
-    for direction in LOOKAROUND_DIRECTIONS:
+
+    # Pre-filter: only directions whose neighbor cell exists AND is unmapped.
+    # Then order them so we visit the closest-to-current-yaw first, etc.,
+    # to minimize total rotation. Example: at cell 3 already facing 'down',
+    # if we need to observe cells 4 (right) and 6 (down), we visit 6 first
+    # (no rotation) then 4 (one 90° turn), instead of doing 4 then 6
+    # (two turns).
+    candidates = []
+    for direction in ALL_DIRECTIONS:
         neighbor = physical_neighbor(current_physical_state, direction)
         if neighbor is None:
-            continue   # off-grid in that direction
-        if neighbor == current_physical_state:
-            continue   # 'stay' shouldn't be in the list, but defensive
-        if neighbor in perceived_labels:
-            # Already observed (empty or labelled). Static world — skip the
-            # rotation; don't waste time confirming.
             continue
-        observe_cell_in_direction(neighbor, direction)
+        if neighbor == current_physical_state:
+            continue
+        if neighbor in perceived_labels:
+            continue
+        candidates.append(direction)
+
+    if candidates:
+        ordered = lookaround_order_from_yaw(bot.yaw, candidates, bot)
+        print(f"  [PLAN-LOOK] order: {ordered}")
+        for direction in ordered:
+            neighbor = physical_neighbor(current_physical_state, direction)
+            observe_cell_in_direction(neighbor, direction)
 
     # ─── Re-plan with the freshly observed neighborhood ──────────────
     plan_neighbors = get_states_within_h_distance(n, m, current_physical_state, p_h)
