@@ -308,8 +308,13 @@ while next_dfa_state != 'accept_all':
         break
 
     # ─── Execute one cell move ──────────────────────────────────────
+    # IMPORTANT: wait for the whole move to finish before the next iteration,
+    # otherwise the next look-around's bot.face() runs mid-drive in parallel
+    # with the still-running _drive_continuous and the robot turns half-way
+    # through. wait_for_cell_entry() only returns at the half-cell mark —
+    # we need bot.wait() which blocks until the motion thread is idle.
     bot.move(action)
-    bot.wait_for_cell_entry()
+    bot.wait()
 
     # Mark cell as visited.
     if next_physical_state not in visited_states_un:
