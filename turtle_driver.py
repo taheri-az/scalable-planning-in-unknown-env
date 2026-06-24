@@ -59,7 +59,7 @@ class TurtleBot:
     }
 
     # Hard motion limits (TB3 Burger: 0.22 m/s, ~2.84 rad/s)
-    LINEAR_SPEED    = 0.035   # slow forward motion
+    LINEAR_SPEED    = 0.05    # forward motion
     ANGULAR_SPEED   = 0.7     # slower turns -> less wheel slip + camera shake
 
     # Linear velocity held during a heading change. Set to 0 so the robot
