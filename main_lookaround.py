@@ -398,32 +398,50 @@ while next_dfa_state != 'accept_all':
     action = policy[current_state]
     next_physical_state = get_next_state(n, m, current_physical_state, action, adj_matrix)
 
-    # ─── Diagnostic: print V(next_state_for_each_action) and current belief ──
-    # We don't have per-action Q-values from Value_iteration (it returns only
-    # V*), but we can still show the value of each successor product-state
-    # the current state could transition to via each legal action. That tells
-    # us where the planner thinks the future value lives.
-    legal_actions = ['up', 'down', 'left', 'right', 'stay']
-    succ_values = []
-    for a in legal_actions:
+    # ─── Diagnostic: reconstruct Q(s, a) the same way Value_iteration does,
+    # so [Q] matches what the policy actually argmaxes over. Earlier we
+    # were printing V(successor) which is NOT what the planner argmaxes —
+    # the planner uses Q = Σ_dfa-transition prob × (-1 + γ × V(next_PA_state)).
+    # The previous diagnostic could disagree with the chosen action (e.g.
+    # showed up=-12.58, down=-11.75, but policy picked up) because it
+    # ignored the transition probability distribution and the per-step cost.
+    GAMMA = gamma
+    REWARD_STEP = -1.0   # matches a*c in Value_iteration with a=1, c=-1
+    from planning import build_transition_map
+    txn_map = build_transition_map(portion_transitions)
+
+    def q_for_action(a):
         succ_phys = get_next_state(n, m, current_physical_state, a, adj_matrix)
         if succ_phys is None:
+            return None, None
+        # Look up all the (current_state, succ_phys) product-state transitions.
+        possible = txn_map.get((current_state, succ_phys), [])
+        if not possible:
+            return None, succ_phys
+        q = 0.0
+        for j in possible:
+            prob = transition_dict.get((repr(j[0]), repr(j[1])), 0.0)
+            next_pa = j[1]
+            if next_pa[1] == 'accept_all':
+                term = REWARD_STEP + 1.0     # b*r = 0*1 = 0 in the original; using a*c+b*r = -1+0
+            elif next_pa[1] == 'Trash':
+                term = REWARD_STEP / (1 - GAMMA)
+            else:
+                v_next = all_values.get(next_pa, 0.0)
+                term = REWARD_STEP + GAMMA * v_next
+            q += prob * term
+        return q, succ_phys
+
+    legal_actions = ['up', 'down', 'left', 'right', 'stay']
+    q_parts = []
+    for a in legal_actions:
+        q, succ_phys = q_for_action(a)
+        if q is None:
             continue
-        # The DFA state at the successor depends on the label that would be
-        # observed there. Use the perceived label if known, else EMPTY.
-        succ_label = perceived_labels.get(succ_phys, EMPTY_LABEL)
-        succ_dfa = current_dfa_state
-        for tr in dfa_transitions:
-            if tr[0] == current_dfa_state and succ_label == tr[1][0]:
-                succ_dfa = tr[2]
-                break
-        succ_state = (succ_phys, succ_dfa)
-        v = all_values.get(succ_state, None)
-        if v is not None:
-            mark = '*' if a == action else ''
-            succ_values.append(f"{a}->{succ_phys}(dfa={succ_dfa}) V={v:7.2f}{mark}")
-    if succ_values:
-        print(f"  [SUCC]   " + " | ".join(succ_values))
+        mark = '*' if a == action else ''
+        q_parts.append(f"{a}->{succ_phys} Q={q:7.2f}{mark}")
+    if q_parts:
+        print(f"  [Q]      " + " | ".join(q_parts))
     print(f"  [V]      V(current)={current_value:.2f}")
     # Top belief mass per cell (only show cells with non-trivial mass).
     print(f"  [BELIEF]")
