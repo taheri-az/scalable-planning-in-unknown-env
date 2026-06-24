@@ -466,13 +466,28 @@ while next_dfa_state != 'accept_all':
               f"(V(next)={v_forced:.2f}) to keep exploring.")
 
     # ─── Execute one cell move ──────────────────────────────────────
-    # IMPORTANT: wait for the whole move to finish before the next iteration,
-    # otherwise the next look-around's bot.face() runs mid-drive in parallel
-    # with the still-running _drive_continuous and the robot turns half-way
-    # through. wait_for_cell_entry() only returns at the half-cell mark —
-    # we need bot.wait() which blocks until the motion thread is idle.
+    # Settle dwell BEFORE the move: AMCL's particle filter can lag during
+    # the in-place look-around rotations (LiDAR scans + odometry priors
+    # don't constrain (x,y) well when the robot is spinning). If we start
+    # the drive before AMCL re-converges, x0 = self.x is captured with a
+    # stale pose, then self.x jumps catch-up *during* the drive, the PID
+    # underestimates `traveled`, and the robot overshoots. A short dwell
+    # gives AMCL a few translation-free scans to lock back in.
+    time.sleep(0.5)
+
+    pre_x, pre_y = bot.x, bot.y
+    print(f"  [POSE-PRE]  x={pre_x:.3f} y={pre_y:.3f} yaw={bot.yaw:+.3f}")
     bot.move(action)
     bot.wait()
+    post_x, post_y = bot.x, bot.y
+    # Project the displacement onto the action's heading to get the real
+    # signed forward distance moved. If it's much more than CELL_SIZE, we
+    # overshot.
+    import math as _math
+    th = bot._action_target_yaw(action)
+    moved = (post_x - pre_x) * _math.cos(th) + (post_y - pre_y) * _math.sin(th)
+    print(f"  [POSE-POST] x={post_x:.3f} y={post_y:.3f} yaw={bot.yaw:+.3f}  "
+          f"moved={moved*100:+.1f} cm (target {bot.CELL_SIZE*100:.0f} cm)")
 
     # Mark cell as visited.
     if next_physical_state not in visited_states_un:
