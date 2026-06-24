@@ -244,9 +244,14 @@ def observe_cell_in_direction(cell_we_face, direction):
     # Sticky assignment for cell_we_face.
     if prior is None or prior == EMPTY_LABEL:
         perceived_labels[cell_we_face] = this_obs
+        # Collapse the cell's belief to a Dirac at the observed label — whether
+        # the observation is EMPTY or a real colour. Without this the planner
+        # keeps using the stale prior (e.g. cell 3 still 71% red even after
+        # we directly observed it empty), which makes neighbour Q-values
+        # look identical and the policy ties up at 'stay'.
+        belief = update(belief, cell_we_face, this_obs)
         if this_obs != EMPTY_LABEL:
             print(f"         [LABEL] cell {cell_we_face} -> {this_obs}")
-            belief = update(belief, cell_we_face, this_obs)
             if cell_we_face not in discovered_labels:
                 discovered_labels.append(cell_we_face)
         else:
