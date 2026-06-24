@@ -397,6 +397,22 @@ class TurtleBot:
         completed. Returns immediately for same-direction moves."""
         self._rotation_done.wait(timeout=timeout)
 
+    def face(self, direction):
+        """Synchronously rotate in place to the heading of `direction` (one of
+        the keys of HEADINGS). Returns when the yaw error is within tolerance
+        (or on shutdown). Blocks the caller — used by main variants that need
+        to look around without committing to a forward drive."""
+        if direction not in self.HEADINGS:
+            raise ValueError(f"face(): unknown direction {direction!r}")
+        target_yaw = self._action_target_yaw(direction)
+        if (self._current_yaw_target is not None
+                and self._yaw_diff(target_yaw, self._current_yaw_target) < self.ANGLE_TOLERANCE):
+            # already facing this way
+            return
+        self._current_yaw_target = target_yaw
+        self._blend_rotate(target_yaw)
+        self._stop()
+
     def wait_for_cell_entry(self):
         """Block until the robot has crossed into the next cell (halfway through CELL_SIZE)."""
         self._cell_entered.wait()
