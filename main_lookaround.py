@@ -301,11 +301,45 @@ while next_dfa_state != 'accept_all':
     current_value = current_value_0
     action = policy[current_state]
     next_physical_state = get_next_state(n, m, current_physical_state, action, adj_matrix)
+
+    # ─── Diagnostic: print all action Q-values and the current belief ──
+    # Q-values for every legal action from the current product state.
+    pruned = pruned_set.get(current_state, {})
+    if pruned:
+        q_str = ", ".join(
+            f"{a}={v:7.2f}{'*' if a == action else ''}"
+            for a, v in sorted(pruned.items())
+        )
+        print(f"  [Q]      {q_str}")
+    # Top belief mass per cell (only show cells with non-trivial mass).
+    print(f"  [BELIEF]")
+    for cell_idx in range(n * m):
+        # Find top-2 labels by probability for this cell.
+        top = sorted(belief[cell_idx], key=lambda pl: -pl[0])[:2]
+        # Suppress cells whose top label is empty with mass > 0.95 (boring).
+        if top[0][1] == EMPTY_LABEL and top[0][0] > 0.95:
+            continue
+        parts = ", ".join(f"P({lbl})={p:.2f}" for p, lbl in top)
+        marker = f"  <- perceived: {perceived_labels[cell_idx]!r}" if cell_idx in perceived_labels else ""
+        print(f"           cell {cell_idx:>2}: {parts}{marker}")
+
     print(f"  [DECIDE] action={action:<5} -> cell {next_physical_state} | value={current_value:8.2f}")
 
     if action == 'stay' or next_physical_state is None:
-        print(f"  [WARN] action=stay at cell {current_physical_state}; stopping.")
-        break
+        # Policy picked 'stay'. Don't halt — force the best non-stay action
+        # among the valid ones so the robot keeps exploring. We pick the
+        # legal action with the highest Q-value, excluding 'stay'.
+        non_stay = {a: v for a, v in pruned.items() if a != 'stay'}
+        if not non_stay:
+            print(f"  [WARN] only 'stay' is legal at cell {current_physical_state}; halting.")
+            break
+        action = max(non_stay, key=non_stay.get)
+        next_physical_state = get_next_state(n, m, current_physical_state, action, adj_matrix)
+        if next_physical_state is None:
+            print(f"  [WARN] forced action {action} leaves grid; halting.")
+            break
+        print(f"  [FORCE]  policy said stay; forcing {action} -> cell {next_physical_state} "
+              f"(Q={non_stay[action]:.2f}) to keep exploring.")
 
     # ─── Execute one cell move ──────────────────────────────────────
     # IMPORTANT: wait for the whole move to finish before the next iteration,
