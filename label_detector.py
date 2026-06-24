@@ -27,10 +27,11 @@ HSV_BOUNDS_PATH = Path(__file__).parent / "Camera_tu" / "hsv_bounds.json"
 COLOR_LABEL = {
     "red":    "a && !b && !c",
     "yellow": "!a && b && !c",
-    "orange": "!a && !b && c",   # orange replaces green as the marker for `c`
+    "purple": "!a && !b && c",   # purple is the marker for `c`
     "black":  None,
     "blue":   None,
     "green":  None,
+    "orange": None,
 }
 EMPTY_LABEL = "!a && !b && !c"
 

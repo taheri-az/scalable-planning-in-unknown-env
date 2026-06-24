@@ -18,6 +18,8 @@ DEFAULT_HSV = {
     "green":  ([ 35,  80,  60], [ 85, 255, 255]),
     "yellow": ([ 20, 120,  90], [ 35, 255, 255]),
     "orange": ([  5, 120,  90], [ 18, 255, 255]),
+    # Purple/violet sits between blue and red on the hue wheel (~125-155).
+    "purple": ([125,  60,  60], [155, 255, 255]),
     # Black: any hue, any saturation, very low V. The V_upper is the key knob —
     # raise it to admit darker grays, lower it to demand pure black.
     "black":  ([  0,   0,   0], [180, 255,  50]),
