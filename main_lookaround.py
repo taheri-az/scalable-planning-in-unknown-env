@@ -157,6 +157,11 @@ visited_states = [0]
 visited_states_un = [0]
 previous_probabilities = {}
 perceived_labels = {0: EMPTY_LABEL}   # robot starts at cell 0
+# Collapse belief at the starting cell to match perceived_labels — if we know
+# we're standing on cell 0 and there's no marker on us, belief[0] should be
+# a Dirac at empty, not the seeded prior.
+belief = update(belief, 0, EMPTY_LABEL)
+observation_probabilities = belief
 full_traj = []
 full_physical_traj = []
 discovered_labels = []
@@ -512,6 +517,18 @@ while next_dfa_state != 'accept_all':
         visited_states_un.append(next_physical_state)
     visited_states.append(current_physical_state)
     full_physical_traj.append(current_physical_state)
+
+    # If we just entered a cell we never observed via look-around (rare —
+    # planner-forced exploration into a non-candidate cell), treat the entry
+    # itself as a direct observation that the cell is empty (we're standing
+    # on it; if a marker were there we'd see it). Collapse the belief to
+    # match.
+    if next_physical_state not in perceived_labels:
+        perceived_labels[next_physical_state] = EMPTY_LABEL
+        belief = update(belief, next_physical_state, EMPTY_LABEL)
+        observation_probabilities = belief
+        print(f"  [ENTRY] cell {next_physical_state} not in look-around history; "
+              f"recording as empty on entry.")
 
     # Update DFA based on the cell just entered (whose label we observed
     # during the look-around at the previous step, or that we'll observe
