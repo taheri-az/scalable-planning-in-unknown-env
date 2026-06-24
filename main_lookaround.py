@@ -164,15 +164,21 @@ def observe_cell_in_direction(cell_we_face, direction):
     global `belief` and `perceived_labels`."""
     global belief, observation_probabilities
 
-    # Already labelled? Skip (sticky).
+    # Already observed at all (empty OR non-empty)? Skip — labels are sticky
+    # for non-empty, and we don't waste rotations on cells we've already looked
+    # at. World is static; nothing changes between visits.
     prior = perceived_labels.get(cell_we_face)
-    if prior is not None and prior != EMPTY_LABEL:
-        print(f"  [LOOK] cell {cell_we_face} already known as {prior!r}; skip.")
+    if prior is not None:
+        print(f"  [LOOK] cell {cell_we_face} already observed as {prior!r}; skip.")
         return
 
     print(f"  [LOOK] facing {direction:<5} -> cell {cell_we_face}")
-    detector.reset_observation_window()
+    # Rotate FIRST, then reset the detection window so the grab thread's
+    # min-distance buffer only contains frames taken after the camera has
+    # stopped moving. Otherwise mid-rotation frames (which sweep through
+    # whatever was previously in view) latch a bogus closest-distance.
     bot.face(direction)
+    detector.reset_observation_window()
     time.sleep(LOOKAROUND_DWELL_S)
     detected_label, detected_dist, detected_color, snapshot = detector.detect()
 
@@ -257,9 +263,9 @@ while next_dfa_state != 'accept_all':
             continue   # off-grid in that direction
         if neighbor == current_physical_state:
             continue   # 'stay' shouldn't be in the list, but defensive
-        prior = perceived_labels.get(neighbor)
-        if prior is not None and prior != EMPTY_LABEL:
-            # Already confirmed non-empty — sticky, no need to re-look.
+        if neighbor in perceived_labels:
+            # Already observed (empty or labelled). Static world — skip the
+            # rotation; don't waste time confirming.
             continue
         observe_cell_in_direction(neighbor, direction)
 
@@ -302,15 +308,33 @@ while next_dfa_state != 'accept_all':
     action = policy[current_state]
     next_physical_state = get_next_state(n, m, current_physical_state, action, adj_matrix)
 
-    # ─── Diagnostic: print all action Q-values and the current belief ──
-    # Q-values for every legal action from the current product state.
-    pruned = pruned_set.get(current_state, {})
-    if pruned:
-        q_str = ", ".join(
-            f"{a}={v:7.2f}{'*' if a == action else ''}"
-            for a, v in sorted(pruned.items())
-        )
-        print(f"  [Q]      {q_str}")
+    # ─── Diagnostic: print V(next_state_for_each_action) and current belief ──
+    # We don't have per-action Q-values from Value_iteration (it returns only
+    # V*), but we can still show the value of each successor product-state
+    # the current state could transition to via each legal action. That tells
+    # us where the planner thinks the future value lives.
+    legal_actions = ['up', 'down', 'left', 'right', 'stay']
+    succ_values = []
+    for a in legal_actions:
+        succ_phys = get_next_state(n, m, current_physical_state, a, adj_matrix)
+        if succ_phys is None:
+            continue
+        # The DFA state at the successor depends on the label that would be
+        # observed there. Use the perceived label if known, else EMPTY.
+        succ_label = perceived_labels.get(succ_phys, EMPTY_LABEL)
+        succ_dfa = current_dfa_state
+        for tr in dfa_transitions:
+            if tr[0] == current_dfa_state and succ_label == tr[1][0]:
+                succ_dfa = tr[2]
+                break
+        succ_state = (succ_phys, succ_dfa)
+        v = all_values.get(succ_state, None)
+        if v is not None:
+            mark = '*' if a == action else ''
+            succ_values.append(f"{a}->{succ_phys}(dfa={succ_dfa}) V={v:7.2f}{mark}")
+    if succ_values:
+        print(f"  [SUCC]   " + " | ".join(succ_values))
+    print(f"  [V]      V(current)={current_value:.2f}")
     # Top belief mass per cell (only show cells with non-trivial mass).
     print(f"  [BELIEF]")
     for cell_idx in range(n * m):
@@ -327,19 +351,29 @@ while next_dfa_state != 'accept_all':
 
     if action == 'stay' or next_physical_state is None:
         # Policy picked 'stay'. Don't halt — force the best non-stay action
-        # among the valid ones so the robot keeps exploring. We pick the
-        # legal action with the highest Q-value, excluding 'stay'.
-        non_stay = {a: v for a, v in pruned.items() if a != 'stay'}
-        if not non_stay:
-            print(f"  [WARN] only 'stay' is legal at cell {current_physical_state}; halting.")
+        # among the valid ones so the robot keeps exploring. We rank by the
+        # value of the successor product-state (V(next)) and pick the highest;
+        # ties broken by direction-name lexical order.
+        candidates = []
+        for a in ['up', 'down', 'left', 'right']:
+            succ_phys = get_next_state(n, m, current_physical_state, a, adj_matrix)
+            if succ_phys is None:
+                continue
+            succ_label = perceived_labels.get(succ_phys, EMPTY_LABEL)
+            succ_dfa = current_dfa_state
+            for tr in dfa_transitions:
+                if tr[0] == current_dfa_state and succ_label == tr[1][0]:
+                    succ_dfa = tr[2]
+                    break
+            v = all_values.get((succ_phys, succ_dfa), float('-inf'))
+            candidates.append((v, a, succ_phys))
+        if not candidates:
+            print(f"  [WARN] no legal non-stay action at cell {current_physical_state}; halting.")
             break
-        action = max(non_stay, key=non_stay.get)
-        next_physical_state = get_next_state(n, m, current_physical_state, action, adj_matrix)
-        if next_physical_state is None:
-            print(f"  [WARN] forced action {action} leaves grid; halting.")
-            break
+        candidates.sort(key=lambda c: (-c[0], c[1]))
+        v_forced, action, next_physical_state = candidates[0]
         print(f"  [FORCE]  policy said stay; forcing {action} -> cell {next_physical_state} "
-              f"(Q={non_stay[action]:.2f}) to keep exploring.")
+              f"(V(next)={v_forced:.2f}) to keep exploring.")
 
     # ─── Execute one cell move ──────────────────────────────────────
     # IMPORTANT: wait for the whole move to finish before the next iteration,
