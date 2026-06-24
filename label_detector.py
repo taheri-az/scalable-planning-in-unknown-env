@@ -26,9 +26,9 @@ HSV_BOUNDS_PATH = Path(__file__).parent / "Camera_tu" / "hsv_bounds.json"
 # transition (label = None) — useful for verifying perception independently.
 COLOR_LABEL = {
     "red":    "a && !b && !c",
-    "black":  "!a && b && !c",   # black replaces yellow as the marker for `b`
+    "yellow": "!a && b && !c",
     "green":  "!a && !b && c",
-    "yellow": None,
+    "black":  None,
     "blue":   None,
     "orange": None,
 }
