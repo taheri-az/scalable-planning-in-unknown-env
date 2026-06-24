@@ -52,6 +52,11 @@ SOFT_ZETA       = 0.02
 # Gives the grab thread time to land a few frames in the new heading.
 LOOKAROUND_DWELL_S = 1.0
 
+# Trigger threshold: replan only when update_trigger() across the cells
+# observed in this step's look-around strictly exceeds this. 0.0 means
+# any non-trivial belief change triggers a replan.
+TRIGGER_THRESHOLD = 0.0
+
 # The four cardinal directions. The order used at each step is chosen
 # dynamically based on the robot's current yaw — see
 # `lookaround_order_from_yaw` below.
@@ -184,24 +189,31 @@ def physical_neighbor(state, direction):
 
 
 def observe_cell_in_direction(cell_we_face, direction):
-    """Rotate to face `direction`, dwell briefly, read detector, apply
-    sticky labeling + soft hints. Returns nothing — side-effects on the
-    global `belief` and `perceived_labels`."""
-    global belief, observation_probabilities
+    """Rotate to face `direction`, dwell briefly, read the detector, and
+    return what we saw. DOES NOT mutate `belief`. Sticky labels in
+    `perceived_labels` are updated here (so the next iteration knows not
+    to re-observe), but belief updates are deferred to the caller after
+    update_trigger() has been computed against the *prior* belief.
 
-    # Already observed at all (empty OR non-empty)? Skip — labels are sticky
-    # for non-empty, and we don't waste rotations on cells we've already looked
-    # at. World is static; nothing changes between visits.
+    Returns dict: {
+        'cell':        int,   # the cell we observed
+        'label':       str,   # the perceived label (may be EMPTY_LABEL)
+        'soft_target': int or None,
+        'soft_label':  str  or None,
+    }
+    """
+    # Already observed (empty or labelled)? Skip — labels are sticky for
+    # non-empty, and we don't waste rotations on cells we've already
+    # looked at. World is static; nothing changes between visits.
     prior = perceived_labels.get(cell_we_face)
     if prior is not None:
         print(f"  [LOOK] cell {cell_we_face} already observed as {prior!r}; skip.")
-        return
+        return None
 
     print(f"  [LOOK] facing {direction:<5} -> cell {cell_we_face}")
     # Rotate FIRST, then reset the detection window so the grab thread's
     # min-distance buffer only contains frames taken after the camera has
-    # stopped moving. Otherwise mid-rotation frames (which sweep through
-    # whatever was previously in view) latch a bogus closest-distance.
+    # stopped moving.
     bot.face(direction)
     detector.reset_observation_window()
     time.sleep(LOOKAROUND_DWELL_S)
@@ -227,8 +239,6 @@ def observe_cell_in_direction(cell_we_face, direction):
             cell_offset = int(round(detected_dist / CELL_SIZE_M))
             cell_offset = max(1, min(cell_offset, SOFT_MAX_CELLS))
             target = cell_we_face
-            # cell_we_face is already 1 hop away; for cell_offset=1 the
-            # target IS cell_we_face. For larger offsets, step further.
             for _ in range(cell_offset - 1):
                 nxt = get_next_state(n, m, target, direction, adj_org)
                 if nxt is None:
@@ -241,33 +251,26 @@ def observe_cell_in_direction(cell_we_face, direction):
                 soft_target_cell  = target
                 soft_target_label = detected_label
 
-    # Sticky assignment for cell_we_face.
-    if prior is None or prior == EMPTY_LABEL:
-        perceived_labels[cell_we_face] = this_obs
-        # Collapse the cell's belief to a Dirac at the observed label — whether
-        # the observation is EMPTY or a real colour. Without this the planner
-        # keeps using the stale prior (e.g. cell 3 still 71% red even after
-        # we directly observed it empty), which makes neighbour Q-values
-        # look identical and the policy ties up at 'stay'.
-        belief = update(belief, cell_we_face, this_obs)
-        if this_obs != EMPTY_LABEL:
-            print(f"         [LABEL] cell {cell_we_face} -> {this_obs}")
-            if cell_we_face not in discovered_labels:
-                discovered_labels.append(cell_we_face)
-        else:
-            note = (f"  + soft hint cell {soft_target_cell}"
-                    if soft_target_cell is not None else "")
-            print(f"         [LABEL] cell {cell_we_face} empty{note}")
-
-    if soft_target_cell is not None and soft_target_label is not None:
-        belief = soft_update_belief(belief, soft_target_cell, soft_target_label)
-        print(f"         [SOFT] cell {soft_target_cell} <- "
-              f"P({soft_target_label})={SOFT_P_LABEL}, P(empty)={SOFT_P_EMPTY}")
-
-    observation_probabilities = belief
+    # Sticky perceived_labels — but DON'T touch belief here.
+    perceived_labels[cell_we_face] = this_obs
+    if this_obs != EMPTY_LABEL:
+        print(f"         [LABEL] cell {cell_we_face} -> {this_obs}")
+        if cell_we_face not in discovered_labels:
+            discovered_labels.append(cell_we_face)
+    else:
+        note = (f"  + soft hint cell {soft_target_cell}"
+                if soft_target_cell is not None else "")
+        print(f"         [LABEL] cell {cell_we_face} empty{note}")
 
     if cell_we_face not in visited_states_un:
         visited_states_un.append(cell_we_face)
+
+    return {
+        'cell':        cell_we_face,
+        'label':       this_obs,
+        'soft_target': soft_target_cell,
+        'soft_label':  soft_target_label,
+    }
 
 
 print("=" * 60)
@@ -305,27 +308,71 @@ while next_dfa_state != 'accept_all':
             continue
         candidates.append(direction)
 
+    # Collect this step's observations. observe_cell_in_direction does NOT
+    # mutate `belief` — it just returns what was seen so we can compute the
+    # update_trigger() against the PRIOR belief (the same state the planner
+    # last optimised against) before applying changes.
+    observations_this_step = []
     if candidates:
         ordered = lookaround_order_from_yaw(bot.yaw, candidates, bot)
         print(f"  [PLAN-LOOK] order: {ordered}")
         for direction in ordered:
             neighbor = physical_neighbor(current_physical_state, direction)
-            observe_cell_in_direction(neighbor, direction)
+            obs = observe_cell_in_direction(neighbor, direction)
+            if obs is not None:
+                observations_this_step.append(obs)
 
-    # ─── Re-plan with the freshly observed neighborhood ──────────────
-    plan_neighbors = get_states_within_h_distance(n, m, current_physical_state, p_h)
-    adj_matrix = filter_adj_matrix(adj_org, plan_neighbors)
-    pruned_set = prune_dict_by_states(PA_values(n, m, product_nodes, adj_matrix), plan_neighbors)
-    portion_transitions = prune_transitions_by_states(transitions, plan_neighbors)
-    transition_dict = probabilistic_labeling_next(
-        portion_transitions, observation_probabilities, dfa_transitions, adj_matrix
-    )
-    _t = time.time()
-    policy, all_values = Value_iteration(
-        n, m, pruned_set, transition_dict, portion_transitions, product_nodes, gamma, adj_matrix, epsilon
-    )
-    p_t_t += time.time() - _t
-    p_t_c += 1
+    # ─── Trigger: compare new perceived labels against the prior belief.
+    # This is the same scheme as main.py — replan only when the
+    # cell-by-cell mismatch between the prior probabilities and the
+    # observed truth is non-trivial. Guarantees from the underlying
+    # algorithm depend on this being the gating condition.
+    just_observed = [o['cell'] for o in observations_this_step]
+    trigger_function_value = 0.0
+    if just_observed:
+        neighbor_true_labels = {o['cell']: o['label'] for o in observations_this_step}
+        previous_probabilities = {c: belief[c] for c in just_observed}
+        previous_probabilities = {k: v.tolist() for k, v in previous_probabilities.items()}
+        trigger_function_value = update_trigger(
+            just_observed, neighbor_true_labels, previous_probabilities
+        )
+        print(f"  [TRIGGER] {trigger_function_value:.3f} (threshold={TRIGGER_THRESHOLD})")
+
+    # Apply the deferred belief updates AFTER the trigger has been computed.
+    # Hard update for the cell directly observed; soft update for any
+    # inferred-far cell from the same observation.
+    for obs in observations_this_step:
+        belief = update(belief, obs['cell'], obs['label'])
+        if obs['soft_target'] is not None and obs['soft_label'] is not None:
+            belief = soft_update_belief(belief, obs['soft_target'], obs['soft_label'])
+            print(f"  [SOFT] cell {obs['soft_target']} <- "
+                  f"P({obs['soft_label']})={SOFT_P_LABEL}, P(empty)={SOFT_P_EMPTY}")
+    observation_probabilities = belief
+
+    # Replan only when the trigger fires — i.e., observations actually
+    # disagreed with the prior. Otherwise reuse the existing policy.
+    replan_needed = trigger_function_value > TRIGGER_THRESHOLD
+    if replan_needed:
+        plan_neighbors = get_states_within_h_distance(n, m, current_physical_state, p_h)
+        adj_matrix = filter_adj_matrix(adj_org, plan_neighbors)
+        pruned_set = prune_dict_by_states(PA_values(n, m, product_nodes, adj_matrix), plan_neighbors)
+        portion_transitions = prune_transitions_by_states(transitions, plan_neighbors)
+        transition_dict = probabilistic_labeling_next(
+            portion_transitions, observation_probabilities, dfa_transitions, adj_matrix
+        )
+        _t = time.time()
+        policy, all_values = Value_iteration(
+            n, m, pruned_set, transition_dict, portion_transitions, product_nodes, gamma, adj_matrix, epsilon
+        )
+        p_t_t += time.time() - _t
+        p_t_c += 1
+        print(f"  [REPLAN] trigger={trigger_function_value:.3f} > thr={TRIGGER_THRESHOLD}; "
+              f"new policy computed.")
+    else:
+        # No replan: reuse `policy` and `all_values` from the previous step.
+        # adj_matrix already covers current_physical_state from the prior step.
+        print(f"  [NO-REPLAN] trigger={trigger_function_value:.3f} <= thr={TRIGGER_THRESHOLD}; "
+              f"reusing existing policy.")
 
     # Expand horizon while value is below the unreachable threshold.
     current_value_0 = all_values[current_state]
