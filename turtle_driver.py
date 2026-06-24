@@ -412,6 +412,15 @@ class TurtleBot:
         self._current_yaw_target = target_yaw
         self._blend_rotate(target_yaw)
         self._stop()
+        # Invalidate the previous cell-start anchor. A subsequent move() in
+        # this same direction would otherwise hit the same_direction branch
+        # of _execute_action, which computes x0 from _cell_start_xy + CELL_SIZE
+        # — meaning x0 would be the start of THIS cell + one cell, i.e. the
+        # next cell's start. _drive_continuous would then drive a full
+        # CELL_SIZE from that wrong starting point and overshoot.
+        # Setting it to None forces _execute_action to fall back to
+        # (self.x, self.y) which is correct after an in-place rotation.
+        self._cell_start_xy = None
 
     def wait_for_cell_entry(self):
         """Block until the robot has crossed into the next cell (halfway through CELL_SIZE)."""
