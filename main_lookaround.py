@@ -108,6 +108,11 @@ def soft_update_belief(belief, state, label,
     return belief
 
 
+def canonical_label(label):
+    terms = [t.strip() for t in label.split("&&")]
+    terms.sort()
+    return " && ".join(terms)
+
 # ───────────────────────── CLI / belief source ───────────────────────
 _argp = argparse.ArgumentParser(description="Look-around LTL planner")
 _argp.add_argument("--belief", default="belief.pkl",
@@ -175,8 +180,28 @@ if belief is None:
                                      initial_belief=_hardcoded_initial_belief)
 
 dfa_transitions, initial_state, trash_states_set = extract_dfa_transitions_with_trash_expanded(formula_str)
+
+normalized = []
+
+for src, conds, dst in dfa_transitions:
+    normalized.append(
+        (
+            src,
+            [canonical_label(c) for c in conds],
+            dst
+        )
+    )
+
+dfa_transitions = normalized
 dfa_states = list({t[0] for t in dfa_transitions} | {t[2] for t in dfa_transitions})
 observations = list(set(cond for _, conds, _ in dfa_transitions for cond in conds))
+print("\n================ DFA =================")
+for src, conds, dst in dfa_transitions:
+    for cond in conds:
+        print(f"{src:>4} -- {cond:25} --> {dst}")
+print("Trash states:", trash_states_set)
+print("======================================\n")
+
 
 product_graph, transitions, product_nodes, PR_adj_matrix = generate_product_automaton(
     nodes, edges, adj_org, dfa_states, dfa_transitions, observations
@@ -298,7 +323,7 @@ def observe_cell_in_direction(cell_we_face, direction):
     if (detected_color is not None
             and detected_label is not None
             and detected_dist < ASSIGN_DIST_M):
-        this_obs = detected_label
+        this_obs = canonical_label(detected_label)
     else:
         this_obs = EMPTY_LABEL
         # Far-but-mapped colour → soft hint at a cell further down `direction`.
@@ -316,7 +341,7 @@ def observe_cell_in_direction(cell_we_face, direction):
                     and target != cell_we_face
                     and perceived_labels.get(target) in (None, EMPTY_LABEL)):
                 soft_target_cell  = target
-                soft_target_label = detected_label
+                soft_target_label = canonical_label(detected_label)
 
     # Sticky perceived_labels — but DON'T touch belief here.
     perceived_labels[cell_we_face] = this_obs
@@ -614,10 +639,18 @@ def _run_planner():
         # Update DFA based on the cell just entered (whose label we observed
         # during the look-around at the previous step, or that we'll observe
         # next iteration if this is the first time we entered it).
-        label = perceived_labels.get(next_physical_state, EMPTY_LABEL)
+        # label = perceived_labels.get(next_physical_state, EMPTY_LABEL)
+        # for tr in dfa_transitions:
+        #     if tr[0] == current_dfa_state and label == tr[1][0]:
+        #         next_dfa_state = tr[2]
+        label = canonical_label(perceived_labels.get(next_physical_state, EMPTY_LABEL))
+
         for tr in dfa_transitions:
-            if tr[0] == current_dfa_state and label == tr[1][0]:
+            dfa_label = canonical_label(tr[1][0])
+
+            if tr[0] == current_dfa_state and label == dfa_label:
                 next_dfa_state = tr[2]
+                break
         next_state = (next_physical_state, next_dfa_state)
 
         print(f"           entered cell {next_physical_state}; next_dfa={next_dfa_state}")

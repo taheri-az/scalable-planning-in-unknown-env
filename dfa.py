@@ -69,7 +69,9 @@ def extract_dfa_transitions_with_trash_expanded(formula):
 
             for valuation in all_valuations:
                 if valuation_satisfies(cond_bdd, valuation):
-                    cond_str = valuation_to_formula(valuation)
+                    # cond_str = valuation_to_formula(valuation)
+                    # expanded_transitions.append((src, [cond_str], dst))
+                    cond_str = normalize_condition(valuation_to_formula(valuation))
                     expanded_transitions.append((src, [cond_str], dst))
 
     return expanded_transitions, initial_state_name, trash_states_set
@@ -107,8 +109,11 @@ def probabilistic_labeling_next(transitions, observation_probabilities, dfa_tran
             if dfa_transition[0] == part_1 and dfa_transition[2] == part_2:
                 label = dfa_transition[1][0]
 
+                # for value, obs in observation_probabilities[transition[1][0]]:
+                #     if obs == label:
+                #         transition_dict[(repr(transition[0]), repr(transition[1]))] += value
                 for value, obs in observation_probabilities[transition[1][0]]:
-                    if obs == label:
+                    if normalize_condition(obs) == normalize_condition(label):
                         transition_dict[(repr(transition[0]), repr(transition[1]))] += value
 
                 if part_1 == 'accept_all' and part_2 == 'accept_all':
