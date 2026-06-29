@@ -676,4 +676,4 @@ def _run_planner():
     print(f"  Perceived labels   : {perceived_labels}")
 
 
-viz.run(_run_planner)
+_run_planner()
