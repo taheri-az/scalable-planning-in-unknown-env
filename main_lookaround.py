@@ -18,9 +18,12 @@ be in the directly-faced cell — the same soft-hint mechanism from main.py
 is used to nudge the belief at the inferred farther cell.
 """
 
+import os
 import signal
 import sys
 import time
+import pickle
+import argparse
 import numpy as np
 
 import spot
@@ -105,6 +108,16 @@ def soft_update_belief(belief, state, label,
     return belief
 
 
+# ───────────────────────── CLI / belief source ───────────────────────
+_argp = argparse.ArgumentParser(description="Look-around LTL planner")
+_argp.add_argument("--belief", default="belief.pkl",
+                   help="path to a belief pickle from build_belief_gui.py "
+                        "(default: belief.pkl; falls back to the hard-coded "
+                        "prior if the file is absent)")
+_argp.add_argument("--no-viz", action="store_true",
+                   help="disable the live grid visualization window")
+_cli, _ = _argp.parse_known_args()
+
 # ───────────────────────── grid / DFA setup ──────────────────────────
 n, m = 6, 3
 p_h = 4
@@ -113,13 +126,54 @@ policy_p_h = p_h
 threshold = 0
 gamma = 0.99
 epsilon = 0.01
-formula_str = "F((a & F((b & F(c)))))"
+# formula_str = "F((a & F((b & F(c)))))"
+formula_str = "F a & F b & !c U a & !c U b"
 
 start_time = time.time()
 nodes, edges, adj_matrix_np = create_graph(n, m)
 adj_org = adj_matrix_np.tolist()
 
 atomic_props = extract_atomic_props(formula_str)
+
+# ── Initial belief: load from a pickle built by build_belief_gui.py if one
+# is present, otherwise fall back to the hard-coded prior below. The pickle
+# carries its own (n, m, atomics); if they disagree with this run's formula
+# we warn and ignore the file rather than silently mis-planning.
+_hardcoded_initial_belief = {
+    3: {'a && !b && !c': 0.8, '!a && !b && !c': 0.2},
+    4: {'!a && b && !c': 0.8, '!a && !b && !c': 0.2},
+    9: {'!a && !b && c': 0.8, '!a && !b && !c': 0.2},
+}
+
+belief = None
+if os.path.exists(_cli.belief):
+    try:
+        with open(_cli.belief, "rb") as _f:
+            _data = pickle.load(_f)
+        if (_data["n"], _data["m"]) != (n, m):
+            print(f"[belief] {_cli.belief} is for grid "
+                  f"{_data['n']}x{_data['m']}, but this run is {n}x{m}; "
+                  f"adopting the pickle's grid size.")
+            n, m = _data["n"], _data["m"]
+            nodes, edges, adj_matrix_np = create_graph(n, m)
+            adj_org = adj_matrix_np.tolist()
+        if set(_data["atomics"]) != set(atomic_props):
+            print(f"[belief] WARNING: pickle atomics {_data['atomics']} != "
+                  f"formula atomics {atomic_props}; ignoring pickle.")
+        else:
+            belief = _data["belief"]
+            print(f"[belief] loaded initial belief from {_cli.belief} "
+                  f"({len(_data.get('initial_belief', {}))} cells with priors).")
+    except Exception as _e:
+        print(f"[belief] failed to load {_cli.belief}: {_e}; "
+              f"falling back to hard-coded prior.")
+
+if belief is None:
+    print("[belief] using hard-coded prior "
+          "(run build_belief_gui.py to make belief.pkl).")
+    belief = assign_probabilities_g3(n, m, atomic_props,
+                                     initial_belief=_hardcoded_initial_belief)
+
 dfa_transitions, initial_state, trash_states_set = extract_dfa_transitions_with_trash_expanded(formula_str)
 dfa_states = list({t[0] for t in dfa_transitions} | {t[2] for t in dfa_transitions})
 observations = list(set(cond for _, conds, _ in dfa_transitions for cond in conds))
@@ -129,12 +183,6 @@ product_graph, transitions, product_nodes, PR_adj_matrix = generate_product_auto
 )
 transitions = list(dict.fromkeys(transitions))
 
-initial_belief = {
-    3: {'a && !b && !c': 0.8, '!a && !b && !c': 0.2},
-    4: {'!a && b && !c': 0.8, '!a && !b && !c': 0.2},
-    9: {'!a && !b && c': 0.8, '!a && !b && !c': 0.2},
-}
-belief = assign_probabilities_g3(n, m, atomic_props, initial_belief=initial_belief)
 observation_probabilities = belief
 
 initial_state = str(initial_state)
@@ -173,9 +221,23 @@ step_count = 0
 bot = TurtleBot()
 detector = LabelDetector(camera_index=0, record_path="run_lookaround.mp4")
 
+# Live grid visualization (robot pose + discovered labels + belief), updated
+# as the robot moves. Runs in its own thread; no-op if Tk/display is missing
+# or --no-viz was passed.
+from live_viz import LiveViz
+if _cli.no_viz:
+    from live_viz import _NullViz
+    viz = _NullViz()
+else:
+    viz = LiveViz(n, m, atomic_props)
+viz.update(robot_cell=0, heading=None, perceived=perceived_labels,
+           belief=belief, dfa_state=str(initial_state), step=0)
+
 
 def _shutdown_handler(signum, _frame):
     print(f"\n[interrupt] signal {signum} received, shutting down...")
+    try: viz.close()
+    except Exception: pass
     try: bot.shutdown()
     except Exception: pass
     try: detector.close()
@@ -462,6 +524,12 @@ while next_dfa_state != 'accept_all':
 
     print(f"  [DECIDE] action={action:<5} -> cell {next_physical_state} | value={current_value:8.2f}")
 
+    # Refresh the live view with what we know at the current cell (post
+    # look-around, pre-move): position, all perceived labels, and belief.
+    viz.update(robot_cell=current_physical_state, heading=action,
+               perceived=perceived_labels, belief=belief,
+               dfa_state=str(current_dfa_state), step=step_count)
+
     if action == 'stay' or next_physical_state is None:
         # Policy picked 'stay'. Don't halt — force the best non-stay action
         # among the valid ones so the robot keeps exploring. We rank by the
@@ -541,7 +609,13 @@ while next_dfa_state != 'accept_all':
 
     print(f"           entered cell {next_physical_state}; next_dfa={next_dfa_state}")
 
+    # Refresh the live view at the newly-entered cell.
+    viz.update(robot_cell=next_physical_state, heading=action,
+               perceived=perceived_labels, belief=belief,
+               dfa_state=str(next_dfa_state), step=step_count)
+
 bot.wait()
+viz.close()
 detector.close()
 
 print()

@@ -6,3 +6,9 @@ __pycache__/
 *.json
 analysis_results/
 analysis2_results/
+
+# Per-experiment artifacts — built/recorded locally, not shipped
+belief.pkl
+run.mp4
+run_lookaround.mp4
+*.mp4
