@@ -1,28 +1,33 @@
 """
 Live grid visualization for the look-around planner.
 
-Runs a Tkinter window in a background thread so it never blocks the planner
-loop. The planner pushes state updates via `update(...)`; the window redraws
-itself on its own timer by draining a thread-safe queue.
+Tkinter/Tcl is not thread-safe, so the Tk event loop must own the MAIN thread.
+`LiveViz.run(worker_fn)` runs the Tk loop on the calling (main) thread and
+launches the planner `worker_fn` in a background thread. The worker pushes
+state updates via `update(...)`; the window redraws on its own timer by
+draining a thread-safe queue. (Creating Tk in a side thread instead caused
+"Tcl_AsyncDelete: async handler deleted by the wrong thread" at shutdown.)
 
 Shows, for an n×m grid:
-  - the robot's current cell (highlighted, with a heading arrow),
-  - discovered/perceived labels per cell (sticky observations),
-  - the current belief per cell (dominant label + probability, plus a faint
-    tint by dominant atomic),
+  - the robot's current cell as a centered glowing disc with a heading arrow,
+  - observed/perceived labels per cell (sticky; bright ring + "✓ observed"),
+  - the current belief per un-observed cell: the top-2 labels with their
+    probabilities and mass bars, tinted by the dominant atomic,
   - the DFA state and step counter in a status strip.
 
 Usage from the planner:
     from live_viz import LiveViz
-    viz = LiveViz(n, m, atomics)          # opens the window (background thread)
-    viz.update(robot_cell=0, heading='right',
-               perceived=perceived_labels, belief=belief,
-               dfa_state='1', step=3)
-    ...
-    viz.close()
+    viz = LiveViz(n, m, atomics)          # no window yet
+    def planner():
+        ...
+        viz.update(robot_cell=0, heading='right',
+                   perceived=perceived_labels, belief=belief,
+                   dfa_state='1', step=3)
+        ...
+    viz.run(planner)                       # Tk on main thread; planner in worker
 
-If Tkinter or a display is unavailable the LiveViz becomes a no-op so the
-planner still runs headless (e.g. over SSH without -X).
+If Tkinter or a display is unavailable, run() just executes the worker with no
+GUI so the planner still runs headless (e.g. over SSH without -X).
 """
 
 import queue
@@ -97,13 +102,9 @@ class LiveViz:
             "belief": None, "dfa_state": "?", "step": 0,
         }
         self._closing = False
-        self._ready = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-        # Don't block long; if the window fails to come up we just no-op draws.
-        self._ready.wait(timeout=3.0)
+        self.root = None
 
-    # ---------- public API (called from the planner thread) ----------
+    # ---------- public API (called from the planner/worker thread) ----------
     def update(self, **kw):
         """Push a partial state update. Thread-safe. Recognized keys:
         robot_cell, heading, perceived, belief, dfa_state, step."""
@@ -121,40 +122,79 @@ class LiveViz:
         except Exception:
             pass
 
-    # ---------- window thread ----------
-    def _run(self):
+    def run(self, worker_fn):
+        """Run the Tk event loop on the CALLING thread (must be the main
+        thread) and run `worker_fn` (the planner) in a background thread.
+
+        Tkinter/Tcl is not thread-safe: the interpreter that creates the Tk
+        root must also be the one that runs the mainloop and tears it down.
+        Creating Tk in a side thread (and letting the main thread exit) is
+        exactly what triggers 'Tcl_AsyncDelete: async handler deleted by the
+        wrong thread' on shutdown. So we keep Tk on the main thread and push
+        the planner to a worker thread instead.
+
+        When `worker_fn` returns (or raises), the window is closed and `run`
+        returns. Exceptions from the worker are re-raised here.
+        """
+        self._worker_exc = None
+
+        def _worker():
+            try:
+                worker_fn()
+            except BaseException as e:           # noqa: BLE001 - surfaced below
+                self._worker_exc = e
+            finally:
+                self.close()
+
+        if not self._open_window():
+            # No display: just run the worker synchronously, no GUI.
+            _worker()
+            if self._worker_exc is not None:
+                raise self._worker_exc
+            return
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        try:
+            self.root.mainloop()
+        finally:
+            t.join(timeout=2.0)
+        if self._worker_exc is not None:
+            raise self._worker_exc
+
+    # ---------- window (runs on main thread via run()) ----------
+    def _open_window(self):
         try:
             self.root = tk.Tk()
         except Exception as e:
             print(f"[viz] could not open window ({e}); continuing headless.")
-            # Drain queue forever so the planner's puts never block.
-            self._ready.set()
-            try:
-                while True:
-                    self._q.get()
-            except Exception:
-                return
+            self.root = None
+            return False
         self.root.title(self.title)
         self.root.configure(bg=BG)
 
         self.font_title = tkfont.Font(family="DejaVu Sans", size=12, weight="bold")
-        self.font_cell  = tkfont.Font(family="DejaVu Sans", size=13, weight="bold")
-        self.font_lbl   = tkfont.Font(family="DejaVu Sans", size=9)
-        self.font_small = tkfont.Font(family="DejaVu Sans", size=8)
+        self.font_cell  = tkfont.Font(family="DejaVu Sans", size=16, weight="bold")
+        self.font_lbl   = tkfont.Font(family="DejaVu Sans", size=11, weight="bold")
+        self.font_small = tkfont.Font(family="DejaVu Sans", size=9)
+        self.font_idx   = tkfont.Font(family="DejaVu Sans", size=8)
 
-        w = self.m * self.cell_px + 32
-        h = self.n * self.cell_px + 86
-        self.canvas = tk.Canvas(self.root, width=w, height=h - 40, bg=BG,
+        # Give the canvas a bit of slack around the grid so it can be centered
+        # (and stays centered if the window is resized).
+        self._margin = 24
+        cw = self.m * self.cell_px + 2 * self._margin
+        ch = self.n * self.cell_px + 2 * self._margin
+        self.canvas = tk.Canvas(self.root, width=cw, height=ch, bg=BG,
                                 highlightthickness=0)
-        self.canvas.pack(padx=16, pady=(14, 4))
+        self.canvas.pack(fill="both", expand=True, padx=16, pady=(14, 4))
+        self.canvas.bind("<Configure>", lambda e: self._redraw())
         self.status = tk.Label(self.root, text="", bg=BG, fg=MUTED,
                                font=self.font_title, anchor="w")
         self.status.pack(fill="x", padx=16, pady=(0, 12))
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        self._ready.set()
         self.root.after(60, self._tick)
-        self.root.mainloop()
+        return True
 
     def _on_close(self):
         self._closing = True
@@ -182,24 +222,51 @@ class LiveViz:
             self.root.after(80, self._tick)
 
     # ---------- drawing ----------
-    def _cell_fill(self, cell):
-        """(bg, dominant_label_or_None, prob) using perceived first, then belief."""
+    def _cell_info(self, cell):
+        """Return a dict describing what to draw for `cell`:
+            kind: 'observed' | 'empty' | 'belief' | 'blank'
+            fill: background hex
+            label: dominant non-empty label (or None)
+            top:   list of (prob, short_label) for the top belief entries
+                   (always includes the empty label so the belief is visible).
+        Perceived (sticky) observations take priority over belief.
+        """
         perceived = self._state["perceived"] or {}
         belief = self._state["belief"]
         emp = _empty_label(self.atomics)
 
         lbl = perceived.get(cell)
         if lbl is not None and lbl != emp:
-            return self._atom_color(lbl), lbl, 1.0
-        if belief is not None:
-            dist = belief[cell]
-            best = max(dist, key=lambda pl: pl[0])  # (prob, label)
-            p, blabel = best
-            if blabel != emp and p > 1.0 / (2 ** len(self.atomics)) + 1e-9:
-                return self._atom_color(blabel, dim=True), blabel, p
+            return {"kind": "observed", "fill": self._atom_color(lbl),
+                    "label": lbl, "top": [(1.0, _label_short(lbl, self.atomics))]}
         if lbl == emp:
-            return GRID_EMPTYLBL, emp, 1.0
-        return GRID_EMPTY, None, 0.0
+            return {"kind": "empty", "fill": GRID_EMPTYLBL, "label": None,
+                    "top": [(1.0, "empty")]}
+
+        # Un-observed cell: show the actual belief.
+        if belief is not None:
+            dist = sorted(belief[cell], key=lambda pl: -pl[0])
+            top = [(float(p), _label_short(l, self.atomics)) for p, l in dist[:2]]
+            best_l = dist[0][1]
+            if best_l != emp:
+                # Dominant belief is a real marker → tint by its atomic.
+                return {"kind": "belief", "fill": self._atom_color(best_l, dim=True),
+                        "label": best_l, "top": top}
+            # Dominant belief is empty, but a secondary marker may still matter:
+            # tint faintly by the strongest non-empty belief if it's non-trivial.
+            nonempty = [(p, l) for p, l in dist if l != emp]
+            if nonempty and nonempty[0][0] > 0.08:
+                fill = self._dim2(self._atom_color(nonempty[0][1]))
+            else:
+                fill = GRID_EMPTY
+            return {"kind": "belief", "fill": fill, "label": None, "top": top}
+        return {"kind": "blank", "fill": GRID_EMPTY, "label": None, "top": []}
+
+    def _short_to_label(self, short):
+        """Inverse of _label_short: 'a b' -> 'a && b', 'empty' -> empty label."""
+        if short in ("empty", "", "·"):
+            return _empty_label(self.atomics)
+        return " && ".join(short.split())
 
     def _atom_color(self, label, dim=False):
         terms = [t.strip() for t in label.split('&&')]
@@ -220,51 +287,118 @@ class LiveViz:
                                   int(g * f + eg * (1 - f)),
                                   int(b * f + eb * (1 - f)))
 
+    @staticmethod
+    def _dim2(hexc):
+        """Stronger blend toward the empty-cell colour — a very faint tint used
+        for cells where the dominant belief is empty but a secondary marker
+        still has some mass."""
+        hexc = hexc.lstrip("#")
+        r, g, b = (int(hexc[i:i + 2], 16) for i in (0, 2, 4))
+        er, eg, eb = (int(GRID_EMPTY.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+        f = 0.28
+        return "#%02x%02x%02x" % (int(r * f + er * (1 - f)),
+                                  int(g * f + eg * (1 - f)),
+                                  int(b * f + eb * (1 - f)))
+
+    @staticmethod
+    def _rounded_rect(c, x0, y0, x1, y1, rad, **kw):
+        """Draw a rounded rectangle as a smoothed polygon."""
+        rad = min(rad, (x1 - x0) / 2, (y1 - y0) / 2)
+        pts = [
+            x0 + rad, y0, x1 - rad, y0, x1, y0, x1, y0 + rad,
+            x1, y1 - rad, x1, y1, x1 - rad, y1, x0 + rad, y1,
+            x0, y1, x0, y1 - rad, x0, y0 + rad, x0, y0,
+        ]
+        return c.create_polygon(pts, smooth=True, **kw)
+
     def _redraw(self):
         c = self.canvas
         c.delete("all")
         s = self.cell_px
-        gap = 4
+        gap = 5
         robot = self._state["robot_cell"]
-        perceived = self._state["perceived"] or {}
-        emp = _empty_label(self.atomics)
+
+        # ── Center the grid in the canvas ──
+        cw = c.winfo_width()  or (self.m * s + 2 * self._margin)
+        ch = c.winfo_height() or (self.n * s + 2 * self._margin)
+        grid_w, grid_h = self.m * s, self.n * s
+        ox = max(self._margin, (cw - grid_w) // 2)
+        oy = max(self._margin, (ch - grid_h) // 2)
 
         for r in range(self.n):
             for col in range(self.m):
                 cell = r * self.m + col
-                x0 = 16 + col * s
-                y0 = 4 + r * s
+                x0 = ox + col * s
+                y0 = oy + r * s
                 x1, y1 = x0 + s - gap, y0 + s - gap
-                fill, label, prob = self._cell_fill(cell)
-                outline = BORDER
-                c.create_rectangle(x0, y0, x1, y1, fill=fill, outline=outline,
-                                   width=1)
+                cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+                info = self._cell_info(cell)
+                fill = info["fill"]
                 fg = _ideal_text_color(fill)
 
-                # Cell index (top-left).
-                c.create_text(x0 + 8, y0 + 6, text=str(cell), anchor="nw",
-                              fill=fg, font=self.font_small)
+                # Observed (sticky) non-empty cells get a bright ring; every
+                # other cell a thin border.
+                if info["kind"] == "observed":
+                    self._rounded_rect(c, x0, y0, x1, y1, 12, fill=fill,
+                                       outline=ROBOT_RING, width=3)
+                else:
+                    self._rounded_rect(c, x0, y0, x1, y1, 12, fill=fill,
+                                       outline=BORDER, width=1)
 
-                # Label + probability (center).
-                if label is not None:
-                    short = _label_short(label, self.atomics)
-                    is_sticky = perceived.get(cell) not in (None,)
-                    txt = short if short != "empty" else "·"
-                    c.create_text((x0 + x1) / 2, (y0 + y1) / 2 - 6, text=txt,
+                # Cell index, small, top-left.
+                c.create_text(x0 + 9, y0 + 8, text=str(cell), anchor="nw",
+                              fill=fg, font=self.font_idx)
+
+                # ── Content per cell kind ──
+                if info["kind"] == "observed":
+                    short = _label_short(info["label"], self.atomics)
+                    c.create_text(cx, cy - 6, text=short.upper(), fill=fg,
+                                  font=self.font_cell)
+                    c.create_text(cx, cy + 16, text="✓ observed", fill=fg,
+                                  font=self.font_small)
+
+                elif info["kind"] == "empty":
+                    c.create_text(cx, cy - 4, text="empty", fill=fg,
+                                  font=self.font_small)
+                    c.create_text(cx, cy + 12, text="✓ seen", fill=fg,
+                                  font=self.font_small)
+
+                elif info["kind"] == "belief" and info["top"]:
+                    # Show the belief itself: top-1 label big, then up to two
+                    # (label prob%) rows with mass bars so the belief is
+                    # readable at a glance and updates each step.
+                    top = info["top"]
+                    head_short = top[0][1]
+                    c.create_text(cx, y0 + 26,
+                                  text=(head_short.upper()
+                                        if head_short != "empty" else "·"),
                                   fill=fg, font=self.font_cell)
-                    if short != "empty":
-                        sub = ("seen" if (is_sticky and perceived.get(cell) == label
-                                          and label != emp)
-                               else f"{int(round(prob * 100))}%")
-                        c.create_text((x0 + x1) / 2, (y0 + y1) / 2 + 14,
-                                      text=sub, fill=fg, font=self.font_small)
+                    row_y = cy + 6
+                    bw = (x1 - x0) - 24
+                    for p, sh in top:
+                        c.create_text(x0 + 12, row_y, anchor="w",
+                                      text=f"{sh} {int(round(p * 100))}%",
+                                      fill=fg, font=self.font_small)
+                        by = row_y + 10
+                        c.create_rectangle(x0 + 12, by, x0 + 12 + bw, by + 3,
+                                           fill=BORDER, outline="")
+                        c.create_rectangle(
+                            x0 + 12, by, x0 + 12 + int(bw * min(1.0, p)),
+                            by + 3, fill=(self._atom_color(
+                                self._short_to_label(sh)) if sh != "empty"
+                                else MUTED), outline="")
+                        row_y += 22
 
-                # Robot marker.
+                # ── Robot marker: centered glowing disc with heading arrow ──
                 if cell == robot:
-                    c.create_rectangle(x0, y0, x1, y1, outline=ROBOT_RING,
-                                       width=3)
+                    rad = s * 0.30
+                    c.create_oval(cx - rad - 4, cy - rad - 4,
+                                  cx + rad + 4, cy + rad + 4,
+                                  outline=ROBOT_RING, width=2)
+                    c.create_oval(cx - rad, cy - rad, cx + rad, cy + rad,
+                                  fill=ROBOT, outline=ROBOT_RING, width=2)
                     arrow = HEADING_ARROW.get(self._state["heading"], "●")
-                    c.create_text(x1 - 12, y1 - 12, text=arrow, fill=ROBOT,
+                    c.create_text(cx, cy, text=arrow, fill="#1a1a1a",
                                   font=self.font_cell)
 
         st = self._state
@@ -288,18 +422,22 @@ if __name__ == "__main__":
         9: {"!a && !b && c": 0.8, "!a && !b && !c": 0.2},
     })
     viz = LiveViz(n, m, atomics)
-    perceived = {0: "!a && !b && !c"}
-    path = [0, 3, 4, 7, 10, 9]
-    headings = ["right", "down", "right", "down", "down", "left"]
-    for i, (cell, hd) in enumerate(zip(path, headings)):
-        if cell == 3:
-            perceived[3] = "a && !b && !c"
-        if cell == 4:
-            perceived[4] = "!a && b && !c"
-        if cell == 9:
-            perceived[9] = "!a && !b && c"
-        viz.update(robot_cell=cell, heading=hd, perceived=perceived,
-                   belief=belief, dfa_state=str(i), step=i + 1)
-        time.sleep(1.2)
-    time.sleep(2)
-    viz.close()
+
+    def fake_robot():
+        perceived = {0: "!a && !b && !c"}
+        path = [0, 3, 4, 7, 10, 9]
+        headings = ["right", "down", "right", "down", "down", "left"]
+        for i, (cell, hd) in enumerate(zip(path, headings)):
+            if cell == 3:
+                perceived[3] = "a && !b && !c"
+            if cell == 4:
+                perceived[4] = "!a && b && !c"
+            if cell == 9:
+                perceived[9] = "!a && !b && c"
+            viz.update(robot_cell=cell, heading=hd, perceived=perceived,
+                       belief=belief, dfa_state=str(i), step=i + 1)
+            time.sleep(1.2)
+        time.sleep(2)
+
+    # Tk on the main thread; the fake robot drives from a worker thread.
+    viz.run(fake_robot)

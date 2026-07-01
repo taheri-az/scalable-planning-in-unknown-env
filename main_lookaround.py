@@ -676,4 +676,7 @@ def _run_planner():
     print(f"  Perceived labels   : {perceived_labels}")
 
 
-_run_planner()
+# Tk must own the main thread (Tcl is not thread-safe); the planner runs in a
+# worker thread. Calling _run_planner() directly with a threaded LiveViz caused
+# "Tcl_AsyncDelete: async handler deleted by the wrong thread" at shutdown.
+viz.run(_run_planner)
