@@ -92,7 +92,8 @@ class LiveViz:
             return _NullViz()
         return super().__new__(cls)
 
-    def __init__(self, n, m, atomics, cell_px=96, title="Robot — live grid"):
+    def __init__(self, n, m, atomics, cell_px=96, title="Robot — live grid",
+                 belief_pkl="belief.pkl"):
         self.n, self.m, self.atomics = n, m, atomics
         self.cell_px = cell_px
         self.title = title
@@ -103,6 +104,32 @@ class LiveViz:
         }
         self._closing = False
         self.root = None
+        # Seed the initial belief from the same pickle the planner uses, so the
+        # very first frame already shows the prior belief. Live viz.update(
+        # belief=...) calls then overwrite this as the robot moves.
+        if belief_pkl:
+            self._load_initial_belief(belief_pkl)
+
+    def _load_initial_belief(self, path):
+        try:
+            import os
+            import pickle
+            if not os.path.exists(path):
+                return
+            with open(path, "rb") as f:
+                data = pickle.load(f)
+            if (data.get("n"), data.get("m")) != (self.n, self.m):
+                print(f"[viz] {path} is for grid {data.get('n')}x{data.get('m')}, "
+                      f"viz is {self.n}x{self.m}; ignoring for initial belief.")
+                return
+            if set(data.get("atomics", [])) != set(self.atomics):
+                print(f"[viz] {path} atomics {data.get('atomics')} != "
+                      f"{self.atomics}; ignoring for initial belief.")
+                return
+            self._state["belief"] = data["belief"]
+            print(f"[viz] seeded initial belief from {path}.")
+        except Exception as e:
+            print(f"[viz] could not load initial belief from {path}: {e}")
 
     # ---------- public API (called from the planner/worker thread) ----------
     def update(self, **kw):

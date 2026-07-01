@@ -254,7 +254,9 @@ if _cli.no_viz:
     from live_viz import _NullViz
     viz = _NullViz()
 else:
-    viz = LiveViz(n, m, atomic_props)
+    viz = LiveViz(n, m, atomic_props, belief_pkl=_cli.belief)
+# The planner already loaded belief (possibly from _cli.belief); push it so the
+# first frame reflects the exact prior after any startup collapse (e.g. cell 0).
 viz.update(robot_cell=0, heading=None, perceived=perceived_labels,
            belief=belief, dfa_state=str(initial_state), step=0)
 
