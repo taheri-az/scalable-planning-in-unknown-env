@@ -109,8 +109,16 @@ def soft_update_belief(belief, state, label,
 
 
 def canonical_label(label):
+    # Sort conjuncts by ATOMIC NAME (ignoring the leading '!'), so the result
+    # matches the label format used by assign_probabilities_g3's belief array
+    # (positional a,b,c order, e.g. '!a && b && !c'). A plain terms.sort()
+    # sorts '!a','!c','b' as raw strings -> '!a && !c && b', which does NOT
+    # exist in the belief array, so update()/probabilistic_labeling_next() find
+    # no match and collapse that cell's transition probabilities to 0 — the
+    # planner then can't value moving into that cell (this is why moving onto a
+    # goal-completing marker tied with 'stay' at value 0).
     terms = [t.strip() for t in label.split("&&")]
-    terms.sort()
+    terms.sort(key=lambda t: t.lstrip('!'))
     return " && ".join(terms)
 
 # ───────────────────────── CLI / belief source ───────────────────────
@@ -569,6 +577,9 @@ def _run_planner():
         viz.update(robot_cell=current_physical_state, heading=action,
                    perceived=perceived_labels, belief=belief,
                    dfa_state=str(current_dfa_state), step=step_count)
+        # Guarantee the map is repainted with the newly-sensed belief BEFORE the
+        # robot moves — sense, show, then move.
+        viz.flush()
 
         if action == 'stay' or next_physical_state is None:
             # Policy picked 'stay'. Don't halt — force the best non-stay action

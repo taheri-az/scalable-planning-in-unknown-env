@@ -81,6 +81,12 @@ class _NullViz:
     def update(self, **kw):
         pass
 
+    def flush(self, timeout=1.0):
+        pass
+
+    def run(self, worker_fn):
+        worker_fn()
+
     def close(self):
         pass
 
@@ -141,6 +147,19 @@ class LiveViz:
             self._q.put_nowait(dict(kw))
         except Exception:
             pass
+
+    def flush(self, timeout=1.0):
+        """Block until all queued updates have been drained AND redrawn, so the
+        caller can guarantee the map reflects the latest state before doing
+        something else (e.g. commanding a move). Cheap no-op if headless."""
+        if self._closing or self.root is None:
+            return
+        ev = threading.Event()
+        try:
+            self._q.put_nowait({"__flush__": ev})
+        except Exception:
+            return
+        ev.wait(timeout=timeout)
 
     def close(self):
         self._closing = True
@@ -233,18 +252,28 @@ class LiveViz:
     def _tick(self):
         # Drain all pending updates, keeping the latest of each key.
         dirty = False
+        flush_events = []
         try:
             while True:
                 msg = self._q.get_nowait()
                 if msg.get("__close__"):
                     self._on_close()
                     return
+                if "__flush__" in msg:
+                    # Redraw now so the pending state is painted, then release
+                    # the waiter. Handle after draining the rest of the queue.
+                    flush_events.append(msg["__flush__"])
+                    dirty = True
+                    continue
                 self._state.update(msg)
                 dirty = True
         except queue.Empty:
             pass
         if dirty:
             self._redraw()
+            self.canvas.update_idletasks()   # force the paint to hit the screen
+        for ev in flush_events:
+            ev.set()
         if not self._closing:
             self.root.after(80, self._tick)
 
@@ -436,34 +465,73 @@ class LiveViz:
 
 
 if __name__ == "__main__":
-    # Tiny self-test: a fake robot wandering a 6×3 grid.
+    # Self-test: a fake robot wandering a grid. If belief.pkl exists (built by
+    # build_belief_gui.py), use ITS grid size / atomics / belief so you can
+    # double-check the belief.pkl seeding + live-update path end to end.
+    # Otherwise fall back to a built-in 6×3 example.
+    import os
     import time
-    import numpy as np
+    import pickle
+    import argparse
     from labeling import assign_probabilities_g3
 
-    atomics = ["a", "b", "c"]
-    n, m = 6, 3
-    belief = assign_probabilities_g3(n, m, atomics, initial_belief={
-        3: {"a && !b && !c": 0.8, "!a && !b && !c": 0.2},
-        4: {"!a && b && !c": 0.8, "!a && !b && !c": 0.2},
-        9: {"!a && !b && c": 0.8, "!a && !b && !c": 0.2},
-    })
-    viz = LiveViz(n, m, atomics)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--belief", default="belief.pkl",
+                    help="belief pickle to load (default: belief.pkl)")
+    args = ap.parse_args()
+
+    if os.path.exists(args.belief):
+        with open(args.belief, "rb") as f:
+            data = pickle.load(f)
+        n, m, atomics = data["n"], data["m"], data["atomics"]
+        belief = data["belief"]
+        print(f"[demo] loaded {args.belief}: grid {n}x{m}, atomics {atomics}")
+    else:
+        print(f"[demo] {args.belief} not found; using built-in 6×3 example.")
+        atomics = ["a", "b", "c"]
+        n, m = 6, 3
+        belief = assign_probabilities_g3(n, m, atomics, initial_belief={
+            3: {"a && !b && !c": 0.8, "!a && !b && !c": 0.2},
+            4: {"!a && b && !c": 0.8, "!a && !b && !c": 0.2},
+            9: {"!a && !b && c": 0.8, "!a && !b && !c": 0.2},
+        })
+
+    # LiveViz also seeds the initial belief from the pickle on its own; passing
+    # belief_pkl here keeps the very first frame consistent with `belief`.
+    viz = LiveViz(n, m, atomics, belief_pkl=args.belief)
+    emp = _empty_label(atomics)
+
+    def _cell_label(cell):
+        """Which sticky label a cell reveals when visited: the dominant
+        non-empty belief label if any, else empty. This lets the demo 'observe'
+        exactly what your belief.pkl expects at each cell."""
+        dist = sorted(belief[cell], key=lambda pl: -pl[0])
+        p, lbl = dist[0]
+        return lbl if (lbl != emp and p > 0.4) else emp
 
     def fake_robot():
-        perceived = {0: "!a && !b && !c"}
-        path = [0, 3, 4, 7, 10, 9]
-        headings = ["right", "down", "right", "down", "down", "left"]
+        # Walk a snake path over the whole grid so every cell gets visited and
+        # its belief collapses to the observed label as we pass.
+        perceived = {0: _cell_label(0)}
+        path, headings = [], []
+        cur = 0
+        for r in range(n):
+            cols = range(m) if r % 2 == 0 else range(m - 1, -1, -1)
+            for col in cols:
+                nxt = r * m + col
+                if nxt == cur and not path:
+                    path.append(nxt); headings.append(None); continue
+                # heading from cur -> nxt
+                dr, dc = divmod(nxt, m)[0] - divmod(cur, m)[0], (nxt % m) - (cur % m)
+                hd = ("right" if dc > 0 else "left" if dc < 0 else
+                      "down" if dr > 0 else "up" if dr < 0 else None)
+                path.append(nxt); headings.append(hd); cur = nxt
+
         for i, (cell, hd) in enumerate(zip(path, headings)):
-            if cell == 3:
-                perceived[3] = "a && !b && !c"
-            if cell == 4:
-                perceived[4] = "!a && b && !c"
-            if cell == 9:
-                perceived[9] = "!a && !b && c"
+            perceived[cell] = _cell_label(cell)   # observe on entry
             viz.update(robot_cell=cell, heading=hd, perceived=perceived,
                        belief=belief, dfa_state=str(i), step=i + 1)
-            time.sleep(1.2)
+            time.sleep(1.0)
         time.sleep(2)
 
     # Tk on the main thread; the fake robot drives from a worker thread.
